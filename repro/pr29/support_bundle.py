@@ -145,30 +145,30 @@ def _redact_log_file(
     patterns: tuple[re.Pattern[str], ...],
 ) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with source.open("r", encoding="utf-8", errors="replace") as input_file:
-        with destination.open("w", encoding="utf-8", newline="\n") as output_file:
-            for line in input_file:
-                raw_line = line.rstrip("\r\n")
-                if not raw_line:
-                    continue
-                try:
-                    parsed = json.loads(raw_line)
-                except json.JSONDecodeError:
-                    payload: object = {
-                        "event_code": "LEGACY_LOG_LINE",
-                        "message": _redact_literals(sanitize_log_text(raw_line), patterns),
-                    }
+    with (
+        source.open("r", encoding="utf-8", errors="replace") as input_file,
+        destination.open("w", encoding="utf-8", newline="\n") as output_file,
+    ):
+        for line in input_file:
+            raw_line = line.rstrip("\r\n")
+            if not raw_line:
+                continue
+            try:
+                parsed = json.loads(raw_line)
+            except json.JSONDecodeError:
+                payload: object = {
+                    "event_code": "LEGACY_LOG_LINE",
+                    "message": _redact_literals(sanitize_log_text(raw_line), patterns),
+                }
+            else:
+                if isinstance(parsed, Mapping):
+                    payload = _sanitize_bundle_value("log_record", parsed, patterns)
                 else:
-                    if isinstance(parsed, Mapping):
-                        payload = _sanitize_bundle_value("log_record", parsed, patterns)
-                    else:
-                        payload = {
-                            "event_code": "LEGACY_LOG_LINE",
-                            "message": _sanitize_bundle_value(
-                                "legacy_log_value", parsed, patterns
-                            ),
-                        }
-                output_file.write(_json_bytes(payload).decode("utf-8"))
+                    payload = {
+                        "event_code": "LEGACY_LOG_LINE",
+                        "message": _sanitize_bundle_value("legacy_log_value", parsed, patterns),
+                    }
+            output_file.write(_json_bytes(payload).decode("utf-8"))
     with contextlib.suppress(OSError):
         os.chmod(destination, 0o600)
 
