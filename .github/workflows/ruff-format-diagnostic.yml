@@ -30,7 +30,7 @@ jobs:
           done
           echo '7bc0f9be4cc1f0e5a6aa8eaa02445f2abf53f380eb969e54bd5d6ae682cdef51  candidate/logging_config.py' | sha256sum --check
           echo '11a05efdce7ef0d82be8669a6ff45ed0e7f1398a106c1cfb7b06869e67f33e0a  candidate/support_bundle.py' | sha256sum --check
-          echo '0b7293febc963c78926bddba26884a9a452f3ca03dafe76071d0bfb0e6c9d7b3  candidate/test_logging_config.py' | sha256sum --check
+          echo '57d4f8dca873dbb105a56075c769b4cdab5f6abd490c288d245b18d7afd8f6bf  candidate/test_logging_config.py' | sha256sum --check
           echo 'ee2a80a03d4defd4808dd253082692d2c0a0094d265efe7a3cd9f61783db39ff  candidate/test_support_bundle.py' | sha256sum --check
           echo '656b098a4372fc7f16620858809454d349999a8ccd3e0bff2372aec879cbb729  candidate/pyproject.toml' | sha256sum --check
       - name: Install exact Ruff version
