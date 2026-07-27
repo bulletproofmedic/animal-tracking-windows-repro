@@ -175,9 +175,7 @@ class SafeJsonFormatter(logging.Formatter):
             "message": _redact_text(record.getMessage()),
         }
         if correlation_id:
-            payload["correlation_id"] = _sanitize_value(
-                "correlation_id", correlation_id
-            )
+            payload["correlation_id"] = _sanitize_value("correlation_id", correlation_id)
         if record_id:
             payload["record_id"] = _sanitize_value("record_id", record_id)
         if isinstance(safe_fields, Mapping):
@@ -244,7 +242,6 @@ def configure_logging(log_directory: Path | None = None) -> None:
         handlers=handlers,
         force=True,
     )
-
 '@ | Set-Content -Encoding utf8 repro/logging_config.py
 
 @'
@@ -255,7 +252,11 @@ import logging
 import sys
 from pathlib import Path
 
-from animal_tracking.logging_config import SafeJsonFormatter, configure_logging, log_event
+from animal_tracking.logging_config import (
+    SafeJsonFormatter,
+    configure_logging,
+    log_event,
+)
 
 
 def _record(message: str, **extra: object) -> logging.LogRecord:
@@ -306,11 +307,9 @@ def test_safe_json_formatter_redacts_sensitive_values() -> None:
     payload = json.loads(
         SafeJsonFormatter().format(
             _record(
-                (
-                    "password=hunter2 Bearer abc.def "
-                    "latitude=43.912345 longitude=-78.112345 "
-                    r"path=C:\Users\Example\private.sqlite3"
-                ),
+                "password=hunter2 Bearer abc.def "
+                "latitude=43.912345 longitude=-78.112345 "
+                r"path=C:\Users\Example\private.sqlite3",
                 event_code="SEC-TEST",
                 safe_fields={
                     "api_key": "should-not-appear",
@@ -386,7 +385,9 @@ def test_log_event_populates_structured_extras() -> None:
     assert captured[0].safe_fields == {"status": "PASS"}
 
 
-def test_configure_logging_writes_json_lines_with_governed_rotation(tmp_path: Path) -> None:
+def test_configure_logging_writes_json_lines_with_governed_rotation(
+    tmp_path: Path,
+) -> None:
     configure_logging(tmp_path)
     logging.getLogger("animal_tracking.config-test").info("Configured")
 
@@ -410,7 +411,6 @@ def test_configure_logging_writes_json_lines_with_governed_rotation(tmp_path: Pa
     for configured_handler in root.handlers:
         configured_handler.close()
     root.handlers.clear()
-
 '@ | Set-Content -Encoding utf8 repro/test_logging_config.py
 
-python -m ruff format --diff repro/logging_config.py repro/test_logging_config.py
+python -m ruff format --diff --line-length 100 --target-version py313 repro/logging_config.py repro/test_logging_config.py
