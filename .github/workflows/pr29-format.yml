@@ -1,0 +1,36 @@
+name: PR29 sanitized Ruff formatter
+
+on:
+  push:
+    branches: [diagnostic/pr29-ruff-format]
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Check out sanitized formatter input
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: diagnostic/pr29-ruff-format
+          fetch-depth: 0
+      - name: Set up parity Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.13.14"
+      - name: Format sanitized files and self-remove
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m pip install --disable-pip-version-check --quiet ruff==0.15.22
+          python -m ruff format repro/pr29
+          Remove-Item .github/workflows/pr29-format.yml
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add repro/pr29 .github/workflows/pr29-format.yml
+          git commit -m "Format sanitized PR29 reproducer"
+          git push origin HEAD:diagnostic/pr29-ruff-format
