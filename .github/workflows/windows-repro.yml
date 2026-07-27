@@ -3,17 +3,7 @@ name: Public Windows Reproducer
 on:
   workflow_dispatch:
   push:
-    branches: [main]
-    paths:
-      - ".github/workflows/windows-repro.yml"
-      - "README.md"
-      - ".gitignore"
-      - "SECURITY.md"
-      - "scripts/**"
-      - "repro/**"
-      - "tests/**"
-      - "requirements/**"
-      - "pyproject.toml"
+  pull_request:
 
 permissions:
   contents: read
