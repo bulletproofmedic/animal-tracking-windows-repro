@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.venv/
+venv/
+
+# Build and packaging
+build/
+dist/
+*.egg-info/
+*.spec
+
+# Editors and operating systems
+.vscode/
+.idea/
+*.swp
+*.tmp
+.DS_Store
+Thumbs.db
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.kdbx
+credentials.json
+secrets.*
+
+# Private or sensitive project data
+*.sqlite
+*.sqlite3
+*.db
+*.tif
+*.tiff
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.heic
+*.zip
+*.7z
+*.tar
+*.gz
+*.bak
+*.dump
+*.log
+
+# Git transport/history artifacts
+*.bundle
+*.patch
+*.diff
