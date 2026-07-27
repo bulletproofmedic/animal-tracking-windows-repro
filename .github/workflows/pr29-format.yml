@@ -3,16 +3,13 @@ name: PR29 sanitized Ruff formatter
 on:
   push:
     branches: [diagnostic/pr29-ruff-format]
-  pull_request:
-    branches: [main]
 
 permissions:
   contents: write
 
 jobs:
   format:
-    if: github.head_ref == '' || github.head_ref == 'diagnostic/pr29-ruff-format'
-    runs-on: windows-2025
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Check out sanitized formatter input
@@ -25,12 +22,11 @@ jobs:
         with:
           python-version: "3.13.14"
       - name: Format sanitized files and self-remove
-        shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
+          set -euo pipefail
           python -m pip install --disable-pip-version-check --quiet ruff==0.15.22
           python -m ruff format repro/pr29
-          Remove-Item .github/workflows/pr29-format.yml
+          rm .github/workflows/pr29-format.yml
           git diff --check
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
