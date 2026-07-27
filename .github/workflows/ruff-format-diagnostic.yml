@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  lint:
+  validate:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -24,7 +24,11 @@ jobs:
       - name: Install exact Ruff version
         shell: bash
         run: python -m pip install ruff==0.15.22
-      - name: Print exact lint diagnostics
+      - name: Verify exact lint output
         shell: bash
         working-directory: workspace/repro/pr29
         run: python -m ruff check . --config pyproject.toml --output-format=full
+      - name: Verify exact formatting
+        shell: bash
+        working-directory: workspace/repro/pr29
+        run: python -m ruff format --check . --config pyproject.toml
