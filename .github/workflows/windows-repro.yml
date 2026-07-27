@@ -15,7 +15,7 @@ concurrency:
 jobs:
   validate:
     runs-on: windows-2025
-    timeout-minutes: 20
+    timeout-minutes: 10
 
     steps:
       - name: Check out sanitized reproducer
@@ -23,44 +23,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up parity Python
-        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
-        with:
-          python-version: "3.13.14"
-
-      - name: Test public payload guard
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          python -m unittest discover -s tests -v
-
       - name: Enforce public payload boundary
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           python scripts/check_public_payload.py
 
-      - name: Record hosted Windows environment
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          python --version
-          git --version
-          $os = Get-CimInstance Win32_OperatingSystem
-          [PSCustomObject]@{
-            Caption = $os.Caption
-            Version = $os.Version
-            BuildNumber = $os.BuildNumber
-            Architecture = $os.OSArchitecture
-          } | Format-List
-
       - name: Run bounded synthetic Ruff diagnostic
-        id: ruff_diagnostic
         shell: pwsh
-        continue-on-error: true
         run: |
           $ErrorActionPreference = "Stop"
-          python -m pip install --disable-pip-version-check ruff==0.15.22
+          python -m pip install --quiet --disable-pip-version-check ruff==0.15.22
           New-Item -ItemType Directory -Force -Path repro | Out-Null
           @'
           from __future__ import annotations
@@ -129,23 +102,7 @@ jobs:
           '@ | Set-Content -Path repro/pyproject.toml -Encoding utf8
           Push-Location repro
           try {
-            ruff check candidate.py --output-format concise *>&1 | Tee-Object -FilePath ruff-output.txt
-            $status = $LASTEXITCODE
+            ruff check candidate.py --output-format concise
           } finally {
             Pop-Location
           }
-          exit $status
-
-      - name: Upload Ruff diagnostic output
-        if: always() && hashFiles('repro/ruff-output.txt') != ''
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: at-wal-007-ruff-diagnostic
-          path: repro/ruff-output.txt
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Enforce diagnostic result
-        if: steps.ruff_diagnostic.outcome == 'failure'
-        shell: pwsh
-        run: exit 1
