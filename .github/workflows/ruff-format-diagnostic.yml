@@ -22,7 +22,24 @@ jobs:
           git clone --depth 1 --branch diag/ruff-format-pr29 \
             https://github.com/bulletproofmedic/animal-tracking-windows-repro.git workspace
 
-      - name: Print exact Ruff 0.15.22 formatting diff
+      - name: Generate current sanitized files
+        continue-on-error: true
         shell: pwsh
         working-directory: workspace
         run: ./repro/run.ps1
+
+      - name: Verify exact formatter output identities
+        shell: bash
+        working-directory: workspace
+        run: |
+          set -euo pipefail
+          python -m ruff format --line-length 100 --target-version py313 \
+            repro/logging_config.py repro/test_logging_config.py
+          source_hash="$(git hash-object repro/logging_config.py)"
+          test_hash="$(git hash-object repro/test_logging_config.py)"
+          echo "logging_config.py git blob: ${source_hash}"
+          echo "test_logging_config.py git blob: ${test_hash}"
+          test "${source_hash}" = "c12394451403379ddc7a29953ace1f994953af0d"
+          test "${test_hash}" = "3f0c1dc39710a53267d626e526363af9f7ed6b9a"
+          python -m ruff format --check --line-length 100 --target-version py313 \
+            repro/logging_config.py repro/test_logging_config.py
