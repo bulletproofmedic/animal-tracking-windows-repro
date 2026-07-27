@@ -1,8 +1,6 @@
 name: Ruff Format Diagnostic
 
 on:
-  push:
-    branches: [diag/ruff-format-pr29]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -21,13 +19,20 @@ jobs:
           set -euo pipefail
           git clone --depth 1 --branch diag/ruff-format-pr29 \
             https://github.com/bulletproofmedic/animal-tracking-windows-repro.git workspace
-      - name: Extract sanitized candidate
+      - name: Extract and verify sanitized candidate
         shell: bash
         working-directory: workspace
         run: |
           set -euo pipefail
           mkdir candidate
-          base64 --decode repro/ra-remediation/payload.tar.gz.b64 | tar -xz -C candidate
+          for name in logging_config.py support_bundle.py test_logging_config.py test_support_bundle.py pyproject.toml; do
+            base64 --decode "repro/ra-remediation/${name}.gz.b64" | gzip --decompress > "candidate/${name}"
+          done
+          echo '7bc0f9be4cc1f0e5a6aa8eaa02445f2abf53f380eb969e54bd5d6ae682cdef51  candidate/logging_config.py' | sha256sum --check
+          echo '11a05efdce7ef0d82be8669a6ff45ed0e7f1398a106c1cfb7b06869e67f33e0a  candidate/support_bundle.py' | sha256sum --check
+          echo '0b7293febc963c78926bddba26884a9a452f3ca03dafe76071d0bfb0e6c9d7b3  candidate/test_logging_config.py' | sha256sum --check
+          echo 'ee2a80a03d4defd4808dd253082692d2c0a0094d265efe7a3cd9f61783db39ff  candidate/test_support_bundle.py' | sha256sum --check
+          echo '656b098a4372fc7f16620858809454d349999a8ccd3e0bff2372aec879cbb729  candidate/pyproject.toml' | sha256sum --check
       - name: Install exact Ruff version
         shell: bash
         run: python -m pip install ruff==0.15.22
