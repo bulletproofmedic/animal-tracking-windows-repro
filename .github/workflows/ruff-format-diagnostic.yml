@@ -1,0 +1,26 @@
+name: Ruff Format Diagnostic
+
+on:
+  push:
+    branches: [diag/ruff-format-pr29]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Clone sanitized diagnostic branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch diag/ruff-format-pr29 \
+            https://github.com/bulletproofmedic/animal-tracking-windows-repro.git workspace
+
+      - name: Print exact Ruff 0.15.22 formatting diff
+        shell: pwsh
+        working-directory: workspace
+        run: ./repro/run.ps1
