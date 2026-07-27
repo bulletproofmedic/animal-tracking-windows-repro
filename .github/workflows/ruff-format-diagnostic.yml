@@ -31,18 +31,26 @@ jobs:
           cp repro/ra-remediation/test_logging_config.py candidate/test_logging_config.py
           echo '7bc0f9be4cc1f0e5a6aa8eaa02445f2abf53f380eb969e54bd5d6ae682cdef51  candidate/logging_config.py' | sha256sum --check
           echo '11a05efdce7ef0d82be8669a6ff45ed0e7f1398a106c1cfb7b06869e67f33e0a  candidate/support_bundle.py' | sha256sum --check
-          sha256sum candidate/test_logging_config.py
+          echo '57d4f8dca873dbb105a56075c769b4cdab5f6abd490c288d245b18d7afd8f6bf  candidate/test_logging_config.py' | sha256sum --check
           echo 'ee2a80a03d4defd4808dd253082692d2c0a0094d265efe7a3cd9f61783db39ff  candidate/test_support_bundle.py' | sha256sum --check
           echo '656b098a4372fc7f16620858809454d349999a8ccd3e0bff2372aec879cbb729  candidate/pyproject.toml' | sha256sum --check
       - name: Install exact Ruff version
         shell: bash
         run: python -m pip install ruff==0.15.22
-      - name: Print exact lint diagnostics
+      - name: Apply exact Ruff normalization
         shell: bash
         working-directory: workspace/candidate
-        run: python -m ruff check . --config pyproject.toml --output-format=full
-      - name: Print exact formatting patch
-        if: always()
-        shell: bash
-        working-directory: workspace/candidate
-        run: python -m ruff format --diff . --config pyproject.toml
+        run: |
+          set -euo pipefail
+          python -m ruff check . --fix --config pyproject.toml
+          python -m ruff format . --config pyproject.toml
+          python -m ruff check . --config pyproject.toml
+          python -m ruff format --check . --config pyproject.toml
+          sha256sum logging_config.py support_bundle.py test_logging_config.py test_support_bundle.py > ruff-normalized.sha256
+      - name: Upload normalized sources
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: ruff-normalized-pr29
+          path: workspace/candidate
+          if-no-files-found: error
+          retention-days: 1
