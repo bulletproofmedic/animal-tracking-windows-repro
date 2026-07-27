@@ -1,0 +1,35 @@
+name: Ruff Wheel Diagnostic
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: "3.13.14"
+
+      - name: Download Ruff wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          python -m pip download --only-binary=:all: --no-deps --dest output 'ruff==0.15.22'
+          sha256sum output/*
+
+      - name: Upload Ruff wheel
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ruff-0.15.22-manylinux-wheel
+          path: output/*
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
