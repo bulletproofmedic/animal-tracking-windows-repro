@@ -3,6 +3,8 @@ name: Ruff Format Diagnostic
 on:
   push:
     branches: [diag/ruff-format-pr29]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
