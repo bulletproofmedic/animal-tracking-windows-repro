@@ -28,7 +28,7 @@ jobs:
         shell: bash
         working-directory: workspace/repro/pr29
         run: python -m ruff check . --config pyproject.toml --output-format=full
-      - name: Verify exact formatting
+      - name: Print exact formatting patch
         shell: bash
         working-directory: workspace/repro/pr29
-        run: python -m ruff format --check . --config pyproject.toml
+        run: python -m ruff format --diff . --config pyproject.toml
