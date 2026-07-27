@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -282,10 +283,12 @@ def history_blob_index(root: Path) -> tuple[dict[str, set[str]], dict[str, int]]
     return paths_by_sha, blob_sizes
 
 
-def read_git_blobs(root: Path, blob_sizes: dict[str, int]) -> dict[str, bytes]:
+def iter_git_blobs(
+    root: Path, blob_sizes: dict[str, int]
+) -> Iterator[tuple[str, bytes]]:
     eligible = {sha: size for sha, size in blob_sizes.items() if size <= MAX_FILE_BYTES}
     if not eligible:
-        return {}
+        return
 
     process = subprocess.Popen(
         ["git", "-C", str(root), "cat-file", "--batch"],
@@ -297,7 +300,6 @@ def read_git_blobs(root: Path, blob_sizes: dict[str, int]) -> dict[str, bytes]:
     assert process.stdout is not None
     assert process.stderr is not None
 
-    payloads: dict[str, bytes] = {}
     try:
         for sha, expected_size in eligible.items():
             process.stdin.write(f"{sha}\n".encode("ascii"))
@@ -318,7 +320,7 @@ def read_git_blobs(root: Path, blob_sizes: dict[str, int]) -> dict[str, bytes]:
             terminator = process.stdout.read(1)
             if len(raw) != actual_size or terminator != b"\n":
                 raise RuntimeError(f"Incomplete git blob read for {sha}")
-            payloads[sha] = raw
+            yield sha, raw
     finally:
         process.stdin.close()
         return_code = process.wait()
@@ -327,8 +329,6 @@ def read_git_blobs(root: Path, blob_sizes: dict[str, int]) -> dict[str, bytes]:
         process.stderr.close()
         if return_code != 0:
             raise RuntimeError(f"git cat-file failed: {error.strip()}")
-
-    return payloads
 
 
 def scan_git_history(root: Path) -> list[str]:
@@ -342,7 +342,6 @@ def scan_git_history(root: Path) -> list[str]:
 
     try:
         paths_by_sha, blob_sizes = history_blob_index(root)
-        payloads = read_git_blobs(root, blob_sizes)
     except (OSError, subprocess.CalledProcessError, RuntimeError) as exc:
         return [f"Git history scan failed: {exc}"]
 
@@ -357,15 +356,14 @@ def scan_git_history(root: Path) -> list[str]:
                 f"history:{sha[:12]}: blob is {size} bytes; "
                 f"public reproducer limit is {MAX_FILE_BYTES}"
             )
-            continue
 
-        raw = payloads.get(sha)
-        if raw is None:
-            findings.append(f"history:{sha[:12]}: blob content could not be read")
-            continue
-
-        representative = historical_paths[0]
-        findings.extend(content_findings(f"history:{sha[:12]}:{representative}", raw))
+    try:
+        for sha, raw in iter_git_blobs(root, blob_sizes):
+            historical_paths = sorted(paths_by_sha.get(sha) or {f"<unpathed-blob-{sha}>"})
+            representative = historical_paths[0]
+            findings.extend(content_findings(f"history:{sha[:12]}:{representative}", raw))
+    except (OSError, subprocess.CalledProcessError, RuntimeError) as exc:
+        findings.append(f"Git history scan failed: {exc}")
 
     return findings
 
