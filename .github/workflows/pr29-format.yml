@@ -3,12 +3,15 @@ name: PR29 sanitized Ruff formatter
 on:
   push:
     branches: [diagnostic/pr29-ruff-format]
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: write
 
 jobs:
   format:
+    if: github.head_ref == '' || github.head_ref == 'diagnostic/pr29-ruff-format'
     runs-on: windows-2025
     timeout-minutes: 10
     steps:
