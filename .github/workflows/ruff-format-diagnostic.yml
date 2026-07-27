@@ -6,27 +6,43 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Emit remaining exact Ruff patches
+      - name: Check out sanitized diagnostic branch
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: diag/ruff-format-pr29
+      - name: Normalize and persist exact Ruff output
         shell: bash
-        run: >-
-          set -euo pipefail;
-          git clone --quiet --depth 1 --branch diag/ruff-format-pr29 https://github.com/bulletproofmedic/animal-tracking-windows-repro.git workspace;
-          mkdir workspace/candidate;
-          for name in logging_config.py support_bundle.py test_support_bundle.py pyproject.toml; do base64 --decode "workspace/repro/ra-remediation/${name}.gz.b64" | gzip --decompress > "workspace/candidate/${name}"; done;
-          cp workspace/repro/ra-remediation/test_logging_config.py workspace/candidate/test_logging_config.py;
-          python -m pip install --quiet ruff==0.15.22;
-          cp -R workspace/candidate workspace/original;
-          cd workspace/candidate;
-          python -m ruff check . --fix --config pyproject.toml >/dev/null;
-          python -m ruff format . --config pyproject.toml >/dev/null;
-          python -m ruff check . --config pyproject.toml >/dev/null;
-          python -m ruff format --check . --config pyproject.toml >/dev/null;
-          cd ..;
-          for name in support_bundle.py test_logging_config.py test_support_bundle.py; do patch="${name}.patch"; diff -u "original/${name}" "candidate/${name}" > "${patch}" || true; echo "PATCH_SHA256 ${name} $(sha256sum "${patch}" | cut -d' ' -f1)"; printf 'PATCH_BASE64 %s ' "${name}"; gzip -n -9 -c "${patch}" | base64 -w0; echo; done
+        run: |
+          set -euo pipefail
+          rm -rf candidate repro/ra-normalized
+          mkdir candidate repro/ra-normalized
+          for name in logging_config.py support_bundle.py test_support_bundle.py pyproject.toml; do
+            base64 --decode "repro/ra-remediation/${name}.gz.b64" | gzip --decompress > "candidate/${name}"
+          done
+          cp repro/ra-remediation/test_logging_config.py candidate/test_logging_config.py
+          python -m pip install --quiet ruff==0.15.22
+          cd candidate
+          python -m ruff check . --fix --config pyproject.toml
+          python -m ruff format . --config pyproject.toml
+          python -m ruff check . --config pyproject.toml
+          python -m ruff format --check . --config pyproject.toml
+          cd ..
+          cp candidate/logging_config.py repro/ra-normalized/logging_config.py
+          cp candidate/support_bundle.py repro/ra-normalized/support_bundle.py
+          cp candidate/test_logging_config.py repro/ra-normalized/test_logging_config.py
+          cp candidate/test_support_bundle.py repro/ra-normalized/test_support_bundle.py
+          sha256sum repro/ra-normalized/*.py > repro/ra-normalized/SHA256SUMS
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add repro/ra-normalized
+          if ! git diff --cached --quiet; then
+            git commit -m "Record exact Ruff-normalized security remediation sources"
+            git push origin HEAD:diag/ruff-format-pr29
+          fi
