@@ -8,6 +8,7 @@ on:
       - ".github/workflows/windows-repro.yml"
       - "README.md"
       - ".gitignore"
+      - "SECURITY.md"
       - "scripts/**"
       - "repro/**"
       - "tests/**"
@@ -29,11 +30,19 @@ jobs:
     steps:
       - name: Check out sanitized reproducer
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
 
       - name: Set up parity Python
         uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
           python-version: "3.13.14"
+
+      - name: Test public payload guard
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m unittest discover -s tests -v
 
       - name: Enforce public payload boundary
         shell: pwsh
