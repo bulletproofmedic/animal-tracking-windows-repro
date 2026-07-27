@@ -1,4 +1,4 @@
-name: Public Windows Reproducer
+name: Public Ruff Diagnostic
 
 on:
   workflow_dispatch:
@@ -9,12 +9,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: public-windows-repro-${{ github.ref }}
+  group: public-ruff-diagnostic-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   validate:
-    runs-on: windows-2025
+    runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
@@ -24,18 +24,13 @@ jobs:
           fetch-depth: 0
 
       - name: Enforce public payload boundary
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          python scripts/check_public_payload.py
+        run: python scripts/check_public_payload.py
 
       - name: Run bounded synthetic Ruff diagnostic
-        shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
           python -m pip install --quiet --disable-pip-version-check ruff==0.15.22
-          New-Item -ItemType Directory -Force -Path repro | Out-Null
-          @'
+          mkdir -p repro
+          cat > repro/candidate.py <<'PY'
           from __future__ import annotations
 
           import sqlite3
@@ -90,8 +85,8 @@ jobs:
           def sqlite_context(path: Path) -> None:
               with sqlite3.connect(path) as connection:
                   connection.execute("SELECT 1")
-          '@ | Set-Content -Path repro/candidate.py -Encoding utf8
-          @'
+          PY
+          cat > repro/pyproject.toml <<'TOML'
           [tool.ruff]
           target-version = "py313"
           line-length = 100
@@ -99,10 +94,6 @@ jobs:
           [tool.ruff.lint]
           select = ["E", "F", "I", "UP", "B", "S", "C4", "SIM", "RUF"]
           ignore = ["S101", "E501", "UP046"]
-          '@ | Set-Content -Path repro/pyproject.toml -Encoding utf8
-          Push-Location repro
-          try {
-            ruff check candidate.py --output-format concise
-          } finally {
-            Pop-Location
-          }
+          TOML
+          cd repro
+          ruff check candidate.py --output-format concise
