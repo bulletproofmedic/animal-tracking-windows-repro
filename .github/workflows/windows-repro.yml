@@ -3,17 +3,7 @@ name: Public Windows Reproducer
 on:
   workflow_dispatch:
   push:
-    branches: [main]
-    paths:
-      - ".github/workflows/windows-repro.yml"
-      - "README.md"
-      - ".gitignore"
-      - "SECURITY.md"
-      - "scripts/**"
-      - "repro/**"
-      - "tests/**"
-      - "requirements/**"
-      - "pyproject.toml"
+  pull_request:
 
 permissions:
   contents: read
@@ -64,12 +54,98 @@ jobs:
             Architecture = $os.OSArchitecture
           } | Format-List
 
-      - name: Run staged reproducer
+      - name: Run bounded synthetic Ruff diagnostic
+        id: ruff_diagnostic
         shell: pwsh
+        continue-on-error: true
         run: |
           $ErrorActionPreference = "Stop"
-          if (Test-Path "repro/run.ps1") {
-            & "repro/run.ps1"
-          } else {
-            Write-Host "No reproducer is staged. Windows runner smoke test passed."
+          python -m pip install --disable-pip-version-check ruff==0.15.22
+          New-Item -ItemType Directory -Force -Path repro | Out-Null
+          @'
+          from __future__ import annotations
+
+          import sqlite3
+          import zipfile
+          from contextlib import suppress
+          from pathlib import Path
+          from typing import BinaryIO, IO
+
+
+          def explicit_reraise(path: Path) -> None:
+              try:
+                  path.read_text(encoding="utf-8")
+              except OSError:
+                  raise
+
+
+          def broad_suppression() -> None:
+              with suppress(Exception):
+                  from django.db import connections
+
+                  connections.close_all()
+
+
+          def passive_branch(source: Path, destination: Path) -> None:
+              if source.exists() and not destination.exists():
+                  source.replace(destination)
+              elif not source.exists() and destination.exists():
+                  pass
+              else:
+                  raise RuntimeError("inconsistent synthetic state")
+
+
+          def normalized_mapping(raw: dict[object, object]) -> dict[str, object]:
+              if not all(isinstance(key, str) for key in raw):
+                  raise ValueError("synthetic keys must be strings")
+              return {str(key): value for key, value in raw.items()}
+
+
+          def union_exception(exc: BaseException) -> bool:
+              return isinstance(exc, OSError | RuntimeError | NotImplementedError | ValueError)
+
+
+          def open_members(archive: zipfile.ZipFile, member: str) -> bytes:
+              with archive.open(member, "r") as handle:
+                  return handle.read()
+
+
+          def typed_handles(handle: BinaryIO, stream: IO[bytes]) -> tuple[BinaryIO, IO[bytes]]:
+              return handle, stream
+
+
+          def sqlite_context(path: Path) -> None:
+              with sqlite3.connect(path) as connection:
+                  connection.execute("SELECT 1")
+          '@ | Set-Content -Path repro/candidate.py -Encoding utf8
+          @'
+          [tool.ruff]
+          target-version = "py313"
+          line-length = 100
+
+          [tool.ruff.lint]
+          select = ["E", "F", "I", "UP", "B", "S", "C4", "SIM", "RUF"]
+          ignore = ["S101", "E501", "UP046"]
+          '@ | Set-Content -Path repro/pyproject.toml -Encoding utf8
+          Push-Location repro
+          try {
+            ruff check candidate.py --output-format concise *>&1 | Tee-Object -FilePath ruff-output.txt
+            $status = $LASTEXITCODE
+          } finally {
+            Pop-Location
           }
+          exit $status
+
+      - name: Upload Ruff diagnostic output
+        if: always() && hashFiles('repro/ruff-output.txt') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: at-wal-007-ruff-diagnostic
+          path: repro/ruff-output.txt
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Enforce diagnostic result
+        if: steps.ruff_diagnostic.outcome == 'failure'
+        shell: pwsh
+        run: exit 1
