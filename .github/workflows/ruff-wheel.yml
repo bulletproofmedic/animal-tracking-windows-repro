@@ -1,0 +1,53 @@
+name: Ruff 0.15.22 Wheel Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - diag/ruff-0.15.22-wheel
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ruff-0.15.22-wheel-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.13"
+
+      - name: Download and verify Ruff wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip download --disable-pip-version-check --no-deps --only-binary=:all: \
+            ruff==0.15.22 --dest wheel
+          python - <<'PY'
+          from hashlib import sha256
+          from pathlib import Path
+
+          wheels = list(Path("wheel").glob("ruff-0.15.22-*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit(f"Expected one Ruff wheel, found {len(wheels)}")
+          digest = sha256(wheels[0].read_bytes()).hexdigest()
+          expected = "365523eb91d9224e1bcb03b022fbf0facb8f9e23792a2c53d9d4b3924bdbdebb"
+          if digest != expected:
+              raise SystemExit(f"Unexpected Ruff wheel SHA-256: {digest}")
+          print(f"Verified {wheels[0].name}: {digest}")
+          PY
+
+      - name: Upload verified Ruff wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ruff-0.15.22-linux-x86_64-wheel
+          path: wheel/*.whl
+          if-no-files-found: error
+          retention-days: 1
