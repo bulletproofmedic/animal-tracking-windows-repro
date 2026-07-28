@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - diag/ruff-0.15.22-wheel
+  pull_request:
 
 permissions:
   contents: read
