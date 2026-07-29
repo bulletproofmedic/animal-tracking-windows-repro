@@ -152,7 +152,9 @@ def project_event(
     )
 
 
-def paginate(events: Sequence[Event], *, page: int, page_size: int) -> tuple[Event, ...]:
+def paginate(
+    events: Sequence[Event], *, page: int, page_size: int
+) -> tuple[Event, ...]:
     if page < 1 or page_size < 1:
         raise ValueError("page and page_size must be positive")
     start = (page - 1) * page_size
