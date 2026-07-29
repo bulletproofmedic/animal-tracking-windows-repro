@@ -126,8 +126,8 @@ class ContractIdentityTests(unittest.TestCase):
             data.request_filter["other"] = True
 
     def test_permutations_have_one_canonical_hash(self) -> None:
-        first = dataset(False)
-        second = dataset(True)
+        first = dataset(reverse=False)
+        second = dataset(reverse=True)
         self.assertEqual(first, second)
         self.assertEqual(canonical_hash(first), canonical_hash(second))
 
