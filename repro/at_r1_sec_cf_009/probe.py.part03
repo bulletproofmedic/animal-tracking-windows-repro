@@ -1,0 +1,164 @@
+    data_root = args.data_root.resolve()
+    log_dir = data_root / "logs"
+    protect_directory(data_root)
+    protect_directory(log_dir)
+    log_path = log_dir / "animal-tracking.log"
+    log_path.touch(exist_ok=True)
+    protect_file(log_path)
+
+    logger = logging.getLogger("public.cf009")
+    logger.handlers.clear()
+    logger.setLevel(logging.INFO)
+    handler = ProtectedRotatingFileHandler(
+        log_path,
+        maxBytes=1024 * 1024,
+        backupCount=9,
+        encoding="utf-8",
+    )
+    logger.addHandler(handler)
+    observations: list[dict[str, object]] = []
+    try:
+        for index in range(1, args.rollovers + 1):
+            logger.info("synthetic rollover record %03d %s", index, "X" * 300)
+            handler.flush()
+            handler.doRollover()
+            files = []
+            for candidate in [log_path] + [
+                Path(f"{log_path}.{number}") for number in range(1, 10)
+            ]:
+                if candidate.exists():
+                    files.append(file_observation(candidate, kind="active" if candidate == log_path else "rotated"))
+            observations.append(
+                {
+                    "rollover": index,
+                    "timestamp": utc_now(),
+                    "files": files,
+                }
+            )
+    finally:
+        handler.close()
+        logger.handlers.clear()
+
+    payload = {
+        "schema_version": "1.0",
+        "command": "rollover",
+        "requested_rollovers": args.rollovers,
+        "observed_rollovers": len(observations),
+        "data_root": str(data_root),
+        "log_directory": file_observation(log_dir, kind="directory"),
+        "observations": observations,
+        "timestamp": utc_now(),
+    }
+    write_json(args.output, payload)
+    return 0 if len(observations) >= 11 else 22
+
+
+def build_bundle(data_root: Path, filename: str, interrupt_phase: str | None, output: Path) -> int:
+    support_dir = data_root.resolve() / "support"
+    protect_directory(data_root.resolve())
+    protect_directory(support_dir)
+    destination = support_dir / filename
+    if destination.exists():
+        destination.unlink()
+    workspace = Path(tempfile.mkdtemp(prefix=".public-cf009-work-", dir=support_dir))
+    protect_directory(workspace)
+
+    source = workspace / "redacted-log.jsonl"
+    source.write_text('{"event":"synthetic","status":"safe"}\n', encoding="utf-8")
+    protect_file(source)
+    metadata = workspace / "metadata.json"
+    metadata.write_text(
+        json.dumps({"source_target": SOURCE_TARGET, "synthetic": True}, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    protect_file(metadata)
+
+    if interrupt_phase == "workspace":
+        write_json(
+            output,
+            {
+                "schema_version": "1.0",
+                "phase": "workspace",
+                "workspace": file_observation(workspace, kind="temporary-directory"),
+                "timestamp": utc_now(),
+            },
+        )
+        os._exit(91)
+
+    temporary = support_dir / f".{filename}.{os.getpid()}.tmp"
+    with zipfile.ZipFile(temporary, "x", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        archive.write(source, "logs/redacted-001.jsonl")
+        archive.write(metadata, "metadata.json")
+    protect_file(temporary)
+
+    if interrupt_phase == "temporary":
+        write_json(
+            output,
+            {
+                "schema_version": "1.0",
+                "phase": "temporary",
+                "temporary": file_observation(temporary, kind="temporary-archive"),
+                "timestamp": utc_now(),
+            },
+        )
+        os._exit(92)
+
+    os.link(temporary, destination)
+    activated_identity = (destination.stat().st_dev, destination.stat().st_ino)
+
+    try:
+        protect_file(destination)
+
+        if interrupt_phase == "activated":
+            write_json(
+                output,
+                {
+                    "schema_version": "1.0",
+                    "phase": "activated",
+                    "temporary": file_observation(temporary, kind="temporary-archive"),
+                    "activated": file_observation(destination, kind="archived-support-bundle"),
+                    "timestamp": utc_now(),
+                },
+            )
+            os._exit(93)
+
+        with zipfile.ZipFile(destination) as archive:
+            names = sorted(archive.namelist())
+            if names != ["logs/redacted-001.jsonl", "metadata.json"]:
+                raise AcceptanceError("Unexpected support-bundle inventory.")
+            for name in names:
+                archive.read(name)
+        if sha256_file(destination) != sha256_file(temporary):
+            raise AcceptanceError("Activated support-bundle hash mismatch.")
+        payload = {
+            "schema_version": "1.0",
+            "command": "bundle",
+            "destination": file_observation(destination, kind="archived-support-bundle"),
+            "temporary": file_observation(temporary, kind="temporary-archive"),
+            "workspace": file_observation(workspace, kind="temporary-directory"),
+            "activated_identity": list(activated_identity),
+            "members": names,
+            "timestamp": utc_now(),
+        }
+        write_json(output, payload)
+        return 0
+    except Exception:
+        current_identity = None
+        if destination.exists() and not destination.is_symlink():
+            current_identity = (destination.stat().st_dev, destination.stat().st_ino)
+        if current_identity == activated_identity:
+            destination.unlink(missing_ok=True)
+        raise
+    finally:
+        temporary.unlink(missing_ok=True)
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+def command_bundle(args: argparse.Namespace) -> int:
+    return build_bundle(args.data_root, args.filename, args.interrupt_phase, args.output)
+
+
+def command_cleanup(args: argparse.Namespace) -> int:
+    support_dir = args.data_root.resolve() / "support"
+    removed: list[str] = []
+    retained: list[dict[str, object]] = []
