@@ -1,9 +1,12 @@
 name: Public Windows Reproducer
 
 on:
-  workflow_dispatch:
-  push:
   pull_request:
+    paths:
+      - ".github/workflows/windows-repro.yml"
+      - "repro/**"
+      - "scripts/**"
+      - "tests/**"
 
 permissions:
   contents: read
@@ -18,10 +21,10 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - name: Check out sanitized reproducer
+      - name: Check out current synthetic diagnostic
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Set up parity Python
         uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
@@ -34,7 +37,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           python -m unittest discover -s tests -v
 
-      - name: Enforce public payload boundary
+      - name: Enforce current synthetic payload boundary
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -58,8 +61,4 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          if (Test-Path "repro/run.ps1") {
-            & "repro/run.ps1"
-          } else {
-            Write-Host "No reproducer is staged. Windows runner smoke test passed."
-          }
+          & "repro/run.ps1"
