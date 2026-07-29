@@ -58,7 +58,7 @@ def scan(root: Path) -> list[Finding]:
         current_ids.add(object_id)
         findings.extend(_scan(path.read_bytes(), "current_tracked_content"))
 
-    objects = []
+    objects: list[str] = []
     for line in _git(root, "rev-list", "--objects", "HEAD").splitlines():
         object_id = line.partition(b" ")[0].decode("ascii")
         if object_id not in objects:
@@ -69,21 +69,34 @@ def scan(root: Path) -> list[Finding]:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    assert process.stdin is not None
-    assert process.stdout is not None
-    process.stdin.write(b"".join(value.encode("ascii") + b"\n" for value in objects))
-    process.stdin.close()
-    for object_id in objects:
-        fields = process.stdout.readline().rstrip(b"\n").split(b" ")
-        if len(fields) != 3:
-            raise RuntimeError("invalid object response")
-        object_type = fields[1]
-        size = int(fields[2])
-        payload = process.stdout.read(size)
-        if process.stdout.read(1) != b"\n":
-            raise RuntimeError("incomplete object response")
-        if object_type == b"blob" and object_id not in current_ids:
-            findings.extend(_scan(payload, "reachable_git_history"))
-    if process.wait(timeout=30) != 0:
-        raise RuntimeError("object reader failed")
+    if process.stdin is None or process.stdout is None or process.stderr is None:
+        process.kill()
+        raise RuntimeError("object reader pipes unavailable")
+    stdin = process.stdin
+    stdout = process.stdout
+    stderr = process.stderr
+    try:
+        stdin.write(b"".join(value.encode("ascii") + b"\n" for value in objects))
+        stdin.close()
+        for object_id in objects:
+            fields = stdout.readline().rstrip(b"\n").split(b" ")
+            if len(fields) != 3:
+                raise RuntimeError("invalid object response")
+            object_type = fields[1]
+            size = int(fields[2])
+            payload = stdout.read(size)
+            if stdout.read(1) != b"\n":
+                raise RuntimeError("incomplete object response")
+            if object_type == b"blob" and object_id not in current_ids:
+                findings.extend(_scan(payload, "reachable_git_history"))
+        if process.wait(timeout=30) != 0:
+            raise RuntimeError(stderr.read().decode("utf-8", errors="replace"))
+    finally:
+        if not stdin.closed:
+            stdin.close()
+        stdout.close()
+        stderr.close()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
     return findings
