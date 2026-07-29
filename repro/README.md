@@ -1,24 +1,33 @@
-# Reproducer staging area
+# AT-WAL-006 bounded public diagnostic
 
-Place only the minimum sanitized files needed to reproduce one Windows-specific defect in this directory.
+## Purpose
 
-Recommended structure:
+This branch validates isolated synthetic control semantics corresponding to private remediation head
+`7063ef35bd37621aee8af05b8cbb0c351dda9f68`.
 
-```text
-repro/
-├── run.ps1
-├── src/
-├── tests/
-└── requirements.lock
-```
+The bounded question is whether the following pure control properties execute successfully on
+Windows Server 2025 with CPython 3.13.14:
 
-`run.ps1` is the workflow entry point. It must:
+- invalid queries remain distinguishable from valid zero-result searches;
+- species and direction predicates must match the same accepted child row;
+- nonaccepted child rows are excluded from search projection and export;
+- exact, minimum, estimated, and unknown counts remain separately classified;
+- event-level child-derived groupings are prohibited because they are not partitions;
+- empty and populated CSV files use identical ordered schemas;
+- source-state changes fail closed;
+- report and export populations have explicit limits;
+- pagination materializes one bounded page;
+- report hashes and CSV ordering are deterministic;
+- site or deployment comparisons require verified exposure denominators.
 
-- stop on the first error;
-- install only explicitly pinned dependencies;
-- use synthetic fixtures;
-- run the smallest deterministic command that reproduces the defect;
-- return a nonzero exit code while the defect is present;
-- return zero only after the correction passes.
+## Disclosure boundary
 
-Do not copy a private branch, `.git` directory, repository bundle, database, media corpus, backup, export, or unrelated project code into this directory.
+The payload contains fresh synthetic code and synthetic identifiers only. It contains no private
+Git history, private repository URL, credentials, configuration, locations, media, database,
+archives, logs, or production data.
+
+## Authority boundary
+
+This is diagnostic evidence only. A passing public run does not validate Django ORM behavior,
+database transactions, private integration, packaging, browser behavior, the complete private
+branch, finding closure, merge readiness, owner operational use, or release readiness.
