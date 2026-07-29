@@ -1,0 +1,155 @@
+[CmdletBinding()]
+param()
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$ReproRoot = Join-Path $PSScriptRoot "at_r1_sec_cf_009"
+$ArtifactRoot = Join-Path $RepoRoot "artifacts\at-r1-sec-cf-009"
+$EvidenceRoot = Join-Path $ArtifactRoot "evidence"
+$CaseRoot = Join-Path $EvidenceRoot "cases"
+$RawRoot = Join-Path $EvidenceRoot "raw"
+$BuildRoot = Join-Path $ArtifactRoot "build"
+$DataRoot = Join-Path $env:SystemDrive "ATCF009-Public-$([guid]::NewGuid().ToString('N'))"
+$InstallRoot = Join-Path $env:LOCALAPPDATA "Programs\AnimalTracking-CF009-Public"
+$ExecutionWindow = "PUBLIC-DIAGNOSTIC-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+
+Remove-Item $ArtifactRoot -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Path $CaseRoot,$RawRoot,$BuildRoot -Force | Out-Null
+
+$Run = [ordered]@{
+    schema_version = "1.0"
+    gate = "AT-R1-SEC-CF-009"
+    authority = "PUBLIC_SANITIZED_DIAGNOSTIC_ONLY"
+    source_target = "26e26fc8446df2a913bcd9883193b16a1d3c8383"
+    public_repository = "$env:GITHUB_REPOSITORY"
+    public_commit = "$env:GITHUB_SHA"
+    workflow_run_id = "$env:GITHUB_RUN_ID"
+    workflow_run_attempt = "$env:GITHUB_RUN_ATTEMPT"
+    execution_window_id = $ExecutionWindow
+    started_at = (Get-Date).ToUniversalTime().ToString("o")
+    cases = @()
+    final_disposition = "INCOMPLETE"
+}
+
+function Get-Sha256([string]$Path) {
+    return (Get-FileHash $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Invoke-ObservedCase {
+    param(
+        [Parameter(Mandatory=$true)][string]$Id,
+        [Parameter(Mandatory=$true)][scriptblock]$Action,
+        [int[]]$ExpectedExitCodes = @(0)
+    )
+    $Case = [ordered]@{
+        case_id = $Id
+        status = "NOT_RUN"
+        started_at = (Get-Date).ToUniversalTime().ToString("o")
+        expected_exit_codes = $ExpectedExitCodes
+        commands = @()
+    }
+    try {
+        $Result = & $Action
+        if ($Result -is [hashtable] -or $Result -is [System.Collections.Specialized.OrderedDictionary]) {
+            $Code = [int]$Result.exit_code
+            if ($Result.command) { $Case.commands += [string]$Result.command }
+            if ($Result.artifacts) { $Case.artifacts = $Result.artifacts }
+            if ($Result.observation) { $Case.observation = $Result.observation }
+        } else {
+            $Code = [int]$Result
+        }
+        $Case.exit_code = $Code
+        $Case.status = if ($ExpectedExitCodes -contains $Code) {
+            "OBSERVED_EXPECTED"
+        } else {
+            "OBSERVED_UNEXPECTED"
+        }
+    } catch {
+        $Case.exit_code = 1
+        $Case.status = "EXECUTION_ERROR"
+        $Case.error = [ordered]@{
+            type = $_.Exception.GetType().FullName
+            message = $_.Exception.Message
+        }
+    }
+    $Case.finished_at = (Get-Date).ToUniversalTime().ToString("o")
+    $script:Run.cases += $Case
+    return $Case
+}
+
+function Invoke-Helper {
+    param([string[]]$Arguments)
+    $Command = "`"$script:HelperExe`" " + ($Arguments -join " ")
+    & $script:HelperExe @Arguments
+    return [ordered]@{ exit_code = $LASTEXITCODE; command = $Command }
+}
+
+function Install-PackageCandidate {
+    param(
+        [Parameter(Mandatory=$true)][string]$CandidateRoot,
+        [Parameter(Mandatory=$true)][string]$TargetRoot,
+        [switch]$InjectBeforeSwap
+    )
+    $Parent = Split-Path -Parent $TargetRoot
+    New-Item -ItemType Directory -Path $Parent -Force | Out-Null
+    $Stage = "$TargetRoot.stage.$([guid]::NewGuid().ToString('N'))"
+    $Previous = "$TargetRoot.previous"
+    try {
+        Copy-Item $CandidateRoot $Stage -Recurse -Force
+        if ($InjectBeforeSwap) { throw "Injected upgrade interruption before activation." }
+        Remove-Item $Previous -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path $TargetRoot) { Move-Item $TargetRoot $Previous }
+        Move-Item $Stage $TargetRoot
+        return [ordered]@{
+            target = $TargetRoot
+            previous = $(if (Test-Path $Previous) { $Previous } else { $null })
+        }
+    } catch {
+        Remove-Item $Stage -Recurse -Force -ErrorAction SilentlyContinue
+        throw
+    }
+}
+
+$TempUser = $null
+$TempUserName = $null
+$SystemTaskName = $null
+$PublicTemp = Join-Path $env:TEMP "ATCF009-Public"
+New-Item -ItemType Directory -Path $PublicTemp -Force | Out-Null
+
+try {
+    $Current = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $Principal = [Security.Principal.WindowsPrincipal]$Current
+    $IsAdmin = $Principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $IsAdmin) { throw "Hosted Windows runner is not elevated." }
+
+    $Os = Get-CimInstance Win32_OperatingSystem
+    $Volume = Get-Volume -DriveLetter $env:SystemDrive.Substring(0,1)
+    if ($Volume.FileSystem -ne "NTFS") { throw "System drive is not NTFS." }
+
+    python -m pip install --disable-pip-version-check --no-input PyInstaller==6.21.0
+    if ($LASTEXITCODE -ne 0) { throw "PyInstaller installation failed." }
+
+    $DistRoot = Join-Path $BuildRoot "dist"
+    $WorkRoot = Join-Path $BuildRoot "work"
+    $SpecRoot = Join-Path $BuildRoot "spec"
+    New-Item -ItemType Directory -Path $DistRoot,$WorkRoot,$SpecRoot -Force | Out-Null
+    python -m PyInstaller `
+        --noconfirm `
+        --clean `
+        --onedir `
+        --name AnimalTrackingNtfsAcceptance `
+        --distpath $DistRoot `
+        --workpath $WorkRoot `
+        --specpath $SpecRoot `
+        $env:AT_CF009_ASSEMBLED_PROBE
+    if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed." }
+
+    $PackageRoot = Join-Path $DistRoot "AnimalTrackingNtfsAcceptance"
+    $script:HelperExe = Join-Path $PackageRoot "AnimalTrackingNtfsAcceptance.exe"
+    if (-not (Test-Path $script:HelperExe -PathType Leaf)) {
+        throw "Packaged acceptance executable is missing."
+    }
+
+    # Permit the temporary local account to execute only the public diagnostic package.
