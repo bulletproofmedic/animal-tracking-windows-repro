@@ -6,11 +6,11 @@ Private successor identity at final dispatch:
 
 - repository: `bulletproofmedic/animal-tracking`;
 - branch: `fix/at-wal-008-core-remediation`;
-- commit: `ffe1e2b426d40ad7bd212684b326d6758004adaf`.
+- commit: `264cc30b30520960d107dbaa4c50219a7c80bda5`.
 
 The payload uses only synthetic UUIDs, times, structures, and repository doubles. It contains no private source copy, Git history, credentials, configuration, coordinates, maps, media, databases, logs, or production data.
 
-The 12 controls cover:
+The 13 controls cover:
 
 - complete StructuredFilter typing and half-open bounds;
 - IANA nonexistent/ambiguous wall-time handling;
@@ -22,6 +22,7 @@ The 12 controls cover:
 - bounded cancellable hashing;
 - reload-safe exact-class installation;
 - exact finding identities `AT-WAL-008-F-001` through `F-009` and `AT-WAL-008-R2-F-010`;
-- exact private successor binding.
+- exact private successor binding;
+- a six-mutant effectiveness gate with a required score of 1.0.
 
 One successful Windows Server 2025 / CPython 3.13.14 PR run is the stop condition. This branch and PR are diagnostic only and must not be merged.
