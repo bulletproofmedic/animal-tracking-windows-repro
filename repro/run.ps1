@@ -76,10 +76,27 @@ $RunText = $RunText.Replace(
     'public_commit = "$env:GITHUB_SHA"',
     'public_commit = "$env:AT_PUBLIC_COMMIT"'
 )
+$RunText = $RunText.Replace(
+    '$PublicTemp = Join-Path $env:TEMP "ATCF009-Public"',
+    '$PublicTemp = Join-Path $env:SystemDrive "ATCF009-Public-Evidence-$([guid]::NewGuid().ToString(''N''))"'
+)
+$UnauthorizedGrantMarker = '$Run.accounts.unauthorized_temporary = $true'
+$UnauthorizedGrantReplacement = @'
+$Run.accounts.unauthorized_temporary = $true
+    & icacls $PublicTemp /inheritance:r /grant:r "*$($Current.User.Value):(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*$($TempUser.SID.Value):(OI)(CI)M" /T /C | Out-File (Join-Path $RawRoot "unauthorized-evidence-icacls.txt")
+    if ($LASTEXITCODE -ne 0) { throw "Could not create the isolated unauthorized-probe evidence channel." }
+'@
+$RunText = $RunText.Replace($UnauthorizedGrantMarker, $UnauthorizedGrantReplacement.TrimEnd())
 foreach ($UnsafeStatement in @($UnsafeCommandStatement, $UnsafeArtifactsStatement, $UnsafeObservationStatement)) {
     if ($RunText.Contains($UnsafeStatement)) {
         throw "StrictMode-safe result collector patch was incomplete."
     }
+}
+if ($RunText.Contains('$PublicTemp = Join-Path $env:TEMP "ATCF009-Public"')) {
+    throw "Unauthorized-probe evidence path patch was incomplete."
+}
+if (-not $RunText.Contains('unauthorized-evidence-icacls.txt')) {
+    throw "Unauthorized-probe evidence ACL patch was incomplete."
 }
 $RunText | Set-Content $RunImplementation -Encoding utf8 -NoNewline
 
