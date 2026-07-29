@@ -16,35 +16,70 @@ jobs:
   validate:
     runs-on: windows-2025
     timeout-minutes: 20
+    env:
+      TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
     steps:
-      - name: Check out sanitized reproducer
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          fetch-depth: 0
+      - name: Fetch exact sanitized commit
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Set-Location $env:GITHUB_WORKSPACE
+          Get-ChildItem -Force | Remove-Item -Recurse -Force
+          git init .
+          git remote add origin "https://github.com/$env:GITHUB_REPOSITORY.git"
+          git fetch --no-tags --depth=1 origin $env:TARGET_SHA
+          git checkout --detach FETCH_HEAD
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne $env:TARGET_SHA) {
+            throw "Checked out $actual instead of expected $env:TARGET_SHA."
+          }
 
-      - name: Set up parity Python
-        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
-        with:
-          python-version: "3.13.14"
+      - name: Select hosted Python 3.13
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $toolRoot = Join-Path $env:RUNNER_TOOL_CACHE "Python"
+          $versionDirectories = @(
+            Get-ChildItem -Path $toolRoot -Directory -ErrorAction Stop |
+              Where-Object { $_.Name -match '^3\.13\.\d+$' } |
+              Sort-Object { [version]$_.Name } -Descending
+          )
+          $pythonExe = $null
+          foreach ($versionDirectory in $versionDirectories) {
+            $candidate = Join-Path $versionDirectory.FullName "x64\python.exe"
+            if (Test-Path $candidate) {
+              $pythonExe = $candidate
+              break
+            }
+          }
+          if ($null -eq $pythonExe) {
+            throw "A hosted Python 3.13.x interpreter was not found."
+          }
+          $version = (& $pythonExe -c "import platform; print(platform.python_version())").Trim()
+          if (-not $version.StartsWith("3.13.")) {
+            throw "Expected Python 3.13.x, found $version."
+          }
+          "PYTHON_EXE=$pythonExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Selected Python $version at $pythonExe"
 
       - name: Test public payload guard
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          python -m unittest discover -s tests -v
+          & $env:PYTHON_EXE -m unittest discover -s tests -v
 
       - name: Enforce public payload boundary
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          python scripts/check_public_payload.py
+          & $env:PYTHON_EXE scripts/check_public_payload.py
 
       - name: Record hosted Windows environment
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          python --version
+          & $env:PYTHON_EXE --version
           git --version
           $os = Get-CimInstance Win32_OperatingSystem
           [PSCustomObject]@{
