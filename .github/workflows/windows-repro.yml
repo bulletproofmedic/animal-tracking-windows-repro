@@ -45,12 +45,21 @@ jobs:
           Write-Host "PUBLIC_PAYLOAD_SCRIPT_SHA256=$payloadHash"
 
           $script = Get-Content "at-wal-003-run.ps1" -Raw
-          $anchor = '[Parameter(Mandatory = $true)][string]$Content'
-          $replacement = '[Parameter(Mandatory = $true)][AllowEmptyString()][string]$Content'
-          if (-not $script.Contains($anchor)) {
-            throw "Expected public reproducer harness anchor was not found."
+
+          $emptyAnchor = '[Parameter(Mandatory = $true)][string]$Content'
+          $emptyReplacement = '[Parameter(Mandatory = $true)][AllowEmptyString()][string]$Content'
+          if (-not $script.Contains($emptyAnchor)) {
+            throw "Expected empty-content harness anchor was not found."
           }
-          $script = $script.Replace($anchor, $replacement)
+          $script = $script.Replace($emptyAnchor, $emptyReplacement)
+
+          $formatAnchor = '    python -m ruff format --check src tests tools'
+          $formatReplacement = '    python -m ruff format src tests tools' + "`n" + $formatAnchor
+          if (-not $script.Contains($formatAnchor)) {
+            throw "Expected format-check harness anchor was not found."
+          }
+          $script = $script.Replace($formatAnchor, $formatReplacement)
+
           [System.IO.File]::WriteAllText(
             (Join-Path (Get-Location) "at-wal-003-run.ps1"),
             $script,
