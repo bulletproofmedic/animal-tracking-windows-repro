@@ -48,10 +48,13 @@ python -m compileall -q repro
 
 $candidateHash = (Get-FileHash "repro/manifest_ci_candidate.py" -Algorithm SHA256).Hash.ToLowerInvariant()
 $executedTestHash = (Get-FileHash $testPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$overlayTestHash = (Get-FileHash "repro/test_control_overlay_candidate.py" -Algorithm SHA256).Hash.ToLowerInvariant()
 $runScriptHash = (Get-FileHash "repro/run.ps1" -Algorithm SHA256).Hash.ToLowerInvariant()
 Write-Host "MANIFEST_CANDIDATE_SHA256=$candidateHash"
 Write-Host "MANIFEST_TEST_COMMITTED_SHA256=$committedTestHash"
 Write-Host "MANIFEST_TEST_EXECUTED_SHA256=$executedTestHash"
+Write-Host "CONTROL_OVERLAY_TEST_SHA256=$overlayTestHash"
 Write-Host "MANIFEST_RUN_SCRIPT_SHA256=$runScriptHash"
 
 python $testPath
+python repro/test_control_overlay_candidate.py
