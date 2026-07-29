@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   validate:
-    runs-on: windows-2025
+    runs-on: windows-latest
     timeout-minutes: 20
 
     steps:
