@@ -12,7 +12,7 @@ PHASES = {"PREPARED", "PUBLISHED", "RECORDED"}
 
 
 def _flush(path: Path) -> None:
-    with path.open("rb") as handle:
+    with path.open("r+b") as handle:
         os.fsync(handle.fileno())
 
 
