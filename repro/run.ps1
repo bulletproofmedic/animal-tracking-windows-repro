@@ -38,6 +38,15 @@ if (-not $source.Contains($oldOrdering)) {
 }
 $source = $source.Replace($oldOrdering, $newOrdering)
 
+$source = $source.Replace(
+    "7dba55413b9f6f66ad15b4a0ab6ed56e456c5090",
+    "c7d79248dd14d1d2c40b32320e617fd04af8190e"
+)
+$source = $source.Replace(
+    "3919cc1f761b71b424436f673155bc5300a36e13",
+    "758673c420dcea8c46175d5cbddd4867bf0f4d22"
+)
+
 [System.IO.File]::WriteAllText(
     (Resolve-Path $testPath),
     $source,
