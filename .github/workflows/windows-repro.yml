@@ -43,4 +43,19 @@ jobs:
           $payloadHash = (Get-FileHash "at-wal-003-run.ps1" -Algorithm SHA256).Hash.ToLowerInvariant()
           Write-Host "PUBLIC_PAYLOAD_SHA=$payloadSha"
           Write-Host "PUBLIC_PAYLOAD_SCRIPT_SHA256=$payloadHash"
+
+          $script = Get-Content "at-wal-003-run.ps1" -Raw
+          $anchor = '[Parameter(Mandatory = $true)][string]$Content'
+          $replacement = '[Parameter(Mandatory = $true)][AllowEmptyString()][string]$Content'
+          if (-not $script.Contains($anchor)) {
+            throw "Expected public reproducer harness anchor was not found."
+          }
+          $script = $script.Replace($anchor, $replacement)
+          [System.IO.File]::WriteAllText(
+            (Join-Path (Get-Location) "at-wal-003-run.ps1"),
+            $script,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+          $patchedHash = (Get-FileHash "at-wal-003-run.ps1" -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "EXECUTED_PAYLOAD_SCRIPT_SHA256=$patchedHash"
           & "./at-wal-003-run.ps1"
