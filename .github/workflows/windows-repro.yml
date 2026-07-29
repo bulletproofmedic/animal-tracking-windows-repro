@@ -98,6 +98,13 @@ jobs:
             }
             $script = $script.Replace($gitInitAnchor, $cacheCleanup)
 
+            $oldPrivateHead = '3c2c6430243556c085525a3e36b5bc711035f0fa'
+            $newPrivateHead = '579d8b156e111c5d7ac97ad8ab6272ce2c376b20'
+            if (-not $script.Contains($oldPrivateHead)) {
+              throw "Expected private-head identity anchor was not found."
+            }
+            $script = $script.Replace($oldPrivateHead, $newPrivateHead)
+
             [System.IO.File]::WriteAllText(
               (Join-Path (Get-Location) "at-wal-003-run.ps1"),
               $script,
@@ -106,6 +113,8 @@ jobs:
             $patchedHash = (Get-FileHash "at-wal-003-run.ps1" -Algorithm SHA256).Hash.ToLowerInvariant()
             Write-Host "EXECUTED_PAYLOAD_SCRIPT_SHA256=$patchedHash"
             & "./at-wal-003-run.ps1"
+
+            python repro/test_strict_source_manifest.py
           }
           finally {
             Pop-Location
