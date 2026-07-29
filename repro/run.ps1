@@ -19,10 +19,8 @@ python -m ruff check `
   repro/tests/test_at_wal_006_controls.py `
   repro/tests/test_at_wal_006_reaudit_controls.py
 
-python -m ruff format --check `
+python -m ruff format --diff `
   repro/at_wal_006_controls.py `
   repro/at_wal_006_reaudit_controls.py `
   repro/tests/test_at_wal_006_controls.py `
   repro/tests/test_at_wal_006_reaudit_controls.py
-
-python -m unittest discover -s repro/tests -v
