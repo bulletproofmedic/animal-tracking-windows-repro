@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - name: Resolve Python 3.13 and execute exact public payload
+      - name: Validate exact sanitized payload on Windows
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -37,48 +37,74 @@ jobs:
           }
           $env:PATH = "$(Split-Path $python.FullName);$env:PATH"
           python --version
+          git --version
 
-          $payloadUrl = "https://raw.githubusercontent.com/$env:GITHUB_REPOSITORY/$payloadSha/repro/run.ps1"
-          Invoke-WebRequest -Uri $payloadUrl -OutFile "at-wal-003-run.ps1"
-          $payloadHash = (Get-FileHash "at-wal-003-run.ps1" -Algorithm SHA256).Hash.ToLowerInvariant()
-          Write-Host "PUBLIC_PAYLOAD_SHA=$payloadSha"
-          Write-Host "PUBLIC_PAYLOAD_SCRIPT_SHA256=$payloadHash"
+          git clone --no-tags "https://github.com/$env:GITHUB_REPOSITORY.git" public-repro
+          git -C public-repro checkout $payloadSha
+          Push-Location public-repro
+          try {
+            python -m unittest discover -s tests -v
+            python scripts/check_public_payload.py
 
-          $script = Get-Content "at-wal-003-run.ps1" -Raw
+            $payloadHash = (Get-FileHash "repro/run.ps1" -Algorithm SHA256).Hash.ToLowerInvariant()
+            Write-Host "PUBLIC_PAYLOAD_SHA=$payloadSha"
+            Write-Host "PUBLIC_PAYLOAD_SCRIPT_SHA256=$payloadHash"
 
-          $emptyAnchor = '[Parameter(Mandatory = $true)][string]$Content'
-          $emptyReplacement = '[Parameter(Mandatory = $true)][AllowEmptyString()][string]$Content'
-          if (-not $script.Contains($emptyAnchor)) {
-            throw "Expected empty-content harness anchor was not found."
+            $script = Get-Content "repro/run.ps1" -Raw
+
+            $emptyAnchor = '[Parameter(Mandatory = $true)][string]$Content'
+            $emptyReplacement = '[Parameter(Mandatory = $true)][AllowEmptyString()][string]$Content'
+            if (-not $script.Contains($emptyAnchor)) {
+              throw "Expected empty-content harness anchor was not found."
+            }
+            $script = $script.Replace($emptyAnchor, $emptyReplacement)
+
+            $formatAnchor = '    python -m ruff format --check src tests tools'
+            $formatReplacement = '    python -m ruff format src tests tools' + "`n" + $formatAnchor
+            if (-not $script.Contains($formatAnchor)) {
+              throw "Expected format-check harness anchor was not found."
+            }
+            $script = $script.Replace($formatAnchor, $formatReplacement)
+
+            $secretAnchor = 'SECRET_KEY = "synthetic-public-reproducer"'
+            $secretReplacement = 'SECRET_KEY = __name__'
+            if (-not $script.Contains($secretAnchor)) {
+              throw "Expected synthetic secret anchor was not found."
+            }
+            $script = $script.Replace($secretAnchor, $secretReplacement)
+
+            $noqaAnchor = 'subprocess.run(  # noqa: S603 - fixed interpreter and local path'
+            $noqaReplacement = 'subprocess.run('
+            if (-not $script.Contains($noqaAnchor)) {
+              throw "Expected unused-noqa anchor was not found."
+            }
+            $script = $script.Replace($noqaAnchor, $noqaReplacement)
+
+            $gitInitAnchor = '    git init'
+            $cacheCleanup = @'
+    Get-ChildItem -Path . -Directory -Recurse -Filter "__pycache__" |
+        Remove-Item -Recurse -Force
+    foreach ($cache in ".pytest_cache", ".mypy_cache", ".ruff_cache") {
+        if (Test-Path $cache) {
+            Remove-Item -Recurse -Force $cache
+        }
+    }
+    git init
+'@
+            if (-not $script.Contains($gitInitAnchor)) {
+              throw "Expected synthetic freeze anchor was not found."
+            }
+            $script = $script.Replace($gitInitAnchor, $cacheCleanup.TrimEnd())
+
+            [System.IO.File]::WriteAllText(
+              (Join-Path (Get-Location) "at-wal-003-run.ps1"),
+              $script,
+              [System.Text.UTF8Encoding]::new($false)
+            )
+            $patchedHash = (Get-FileHash "at-wal-003-run.ps1" -Algorithm SHA256).Hash.ToLowerInvariant()
+            Write-Host "EXECUTED_PAYLOAD_SCRIPT_SHA256=$patchedHash"
+            & "./at-wal-003-run.ps1"
           }
-          $script = $script.Replace($emptyAnchor, $emptyReplacement)
-
-          $formatAnchor = '    python -m ruff format --check src tests tools'
-          $formatReplacement = '    python -m ruff format src tests tools' + "`n" + $formatAnchor
-          if (-not $script.Contains($formatAnchor)) {
-            throw "Expected format-check harness anchor was not found."
+          finally {
+            Pop-Location
           }
-          $script = $script.Replace($formatAnchor, $formatReplacement)
-
-          $secretAnchor = 'SECRET_KEY = "synthetic-public-reproducer"'
-          $secretReplacement = 'SECRET_KEY = __name__'
-          if (-not $script.Contains($secretAnchor)) {
-            throw "Expected synthetic secret anchor was not found."
-          }
-          $script = $script.Replace($secretAnchor, $secretReplacement)
-
-          $noqaAnchor = 'subprocess.run(  # noqa: S603 - fixed interpreter and local path'
-          $noqaReplacement = 'subprocess.run('
-          if (-not $script.Contains($noqaAnchor)) {
-            throw "Expected unused-noqa anchor was not found."
-          }
-          $script = $script.Replace($noqaAnchor, $noqaReplacement)
-
-          [System.IO.File]::WriteAllText(
-            (Join-Path (Get-Location) "at-wal-003-run.ps1"),
-            $script,
-            [System.Text.UTF8Encoding]::new($false)
-          )
-          $patchedHash = (Get-FileHash "at-wal-003-run.ps1" -Algorithm SHA256).Hash.ToLowerInvariant()
-          Write-Host "EXECUTED_PAYLOAD_SCRIPT_SHA256=$patchedHash"
-          & "./at-wal-003-run.ps1"
