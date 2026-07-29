@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from repro.sqlite_canonical import (
@@ -61,7 +62,7 @@ class SqliteCanonicalizationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             database = root / "animal_tracking.sqlite3"
-            with sqlite3.connect(database) as setup:
+            with closing(sqlite3.connect(database)) as setup:
                 setup.execute("CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT)")
                 setup.execute("INSERT INTO sample(value) VALUES ('base')")
                 setup.commit()
@@ -83,13 +84,15 @@ class SqliteCanonicalizationTests(unittest.TestCase):
     def test_checkpointed_main_database_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "animal_tracking.sqlite3"
-            with sqlite3.connect(database) as connection:
+            with closing(sqlite3.connect(database)) as connection:
                 connection.execute("CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT)")
                 connection.execute("INSERT INTO sample(value) VALUES ('canonical')")
                 connection.commit()
             validate_members([DATABASE_PATH])
             validate_staged_database(database)
-            with sqlite3.connect(f"file:{database}?mode=ro&immutable=1", uri=True) as connection:
+            with closing(
+                sqlite3.connect(f"file:{database}?mode=ro&immutable=1", uri=True)
+            ) as connection:
                 self.assertEqual(
                     connection.execute("SELECT value FROM sample").fetchone(),
                     ("canonical",),
