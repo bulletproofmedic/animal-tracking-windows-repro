@@ -7,8 +7,8 @@ git --version
 $testPath = "repro/test_manifest_ci_candidate.py"
 $committedTestHash = (Get-FileHash $testPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $source = Get-Content $testPath -Raw
-$old = '            mutated_source = commit(repository, f"{name}-source")'
-$new = @'
+$oldMode = '            mutated_source = commit(repository, f"{name}-source")'
+$newMode = @'
             if name == "mode_mutation":
                 run(
                     repository,
@@ -26,10 +26,18 @@ $new = @'
             else:
                 mutated_source = commit(repository, f"{name}-source")
 '@
-if (-not $source.Contains($old)) {
+if (-not $source.Contains($oldMode)) {
     throw "The bounded Windows mode-mutation harness anchor was not found."
 }
-$source = $source.Replace($old, $new)
+$source = $source.Replace($oldMode, $newMode)
+
+$oldOrdering = '            entries.reverse()'
+$newOrdering = '            groups.reverse()'
+if (-not $source.Contains($oldOrdering)) {
+    throw "The bounded ordering-mutation harness anchor was not found."
+}
+$source = $source.Replace($oldOrdering, $newOrdering)
+
 [System.IO.File]::WriteAllText(
     (Resolve-Path $testPath),
     $source,
