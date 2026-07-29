@@ -1,7 +1,8 @@
-"""Exact function-body extracts from target 42c72f37d3e17f2ad51ec16c867acdfdf1458dc9.
+"""Sanitized control-flow reproducer for target 42c72f37d3e17f2ad51ec16c867acdfdf1458dc9.
 
-Only dependency declarations are minimized for the public reproducer. Function bodies are copied
-from the immutable target sources named in SOURCE_SNAPSHOT.json.
+The strict parser is exact. These lifecycle extracts preserve the target read-before-mutation ordering
+while minimizing unrelated dependencies and implementation detail for public Windows execution.
+Exact source identity is recorded in SOURCE_SNAPSHOT.json and verified separately.
 """
 from __future__ import annotations
 
