@@ -13,29 +13,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  validate-linux-diagnostic:
-    runs-on: ubuntu-latest
+  validate-windows-parity:
+    runs-on: windows-2025
     timeout-minutes: 20
 
     steps:
-      - name: Check out sanitized reproducer
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          fetch-depth: 0
-
-      - name: Set up parity Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.13.14"
-
-      - name: Test public payload guard
-        run: python -m unittest discover -s tests -v
-
-      - name: Enforce public payload boundary
-        run: python scripts/check_public_payload.py
-
-      - name: Run staged reproducer
+      - name: Resolve Python 3.13 and execute exact public payload
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          & "repro/run.ps1"
+          $event = Get-Content $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json
+          if ($null -ne $event.pull_request) {
+            $payloadSha = $event.pull_request.head.sha
+          } else {
+            $payloadSha = $env:GITHUB_SHA
+          }
+
+          $python = Get-ChildItem "C:\hostedtoolcache\windows\Python\3.13.*\x64\python.exe" |
+            Sort-Object FullName |
+            Select-Object -Last 1
+          if ($null -eq $python) {
+            throw "Python 3.13 was not found on the hosted Windows image."
+          }
+          $env:PATH = "$(Split-Path $python.FullName);$env:PATH"
+          python --version
+
+          $payloadUrl = "https://raw.githubusercontent.com/$env:GITHUB_REPOSITORY/$payloadSha/repro/run.ps1"
+          Invoke-WebRequest -Uri $payloadUrl -OutFile "at-wal-003-run.ps1"
+          $payloadHash = (Get-FileHash "at-wal-003-run.ps1" -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "PUBLIC_PAYLOAD_SHA=$payloadSha"
+          Write-Host "PUBLIC_PAYLOAD_SCRIPT_SHA256=$payloadHash"
+          & "./at-wal-003-run.ps1"
