@@ -1,21 +1,19 @@
-name: Public Windows Reproducer
+name: AT-WAL-006 Public Semantic Diagnostic
 
 on:
-  workflow_dispatch:
-  push:
   pull_request:
 
 permissions:
   contents: read
 
 concurrency:
-  group: public-windows-repro-${{ github.ref }}
+  group: at-wal-006-public-semantic-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   validate:
-    runs-on: windows-2025
-    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
 
     steps:
       - name: Check out sanitized reproducer
@@ -29,37 +27,39 @@ jobs:
           python-version: "3.13.14"
 
       - name: Test public payload guard
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          python -m unittest discover -s tests -v
+        run: python -m unittest discover -s tests -v
 
       - name: Enforce public payload boundary
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          python scripts/check_public_payload.py
+        run: python scripts/check_public_payload.py
 
-      - name: Record hosted Windows environment
-        shell: pwsh
+      - name: Record hosted Linux environment
         run: |
-          $ErrorActionPreference = "Stop"
           python --version
           git --version
-          $os = Get-CimInstance Win32_OperatingSystem
-          [PSCustomObject]@{
-            Caption = $os.Caption
-            Version = $os.Version
-            BuildNumber = $os.BuildNumber
-            Architecture = $os.OSArchitecture
-          } | Format-List
+          uname -a
 
-      - name: Run staged reproducer
-        shell: pwsh
+      - name: Install pinned validator
+        run: python -m pip install --disable-pip-version-check --no-input ruff==0.15.22
+
+      - name: Compile sanitized controls
         run: |
-          $ErrorActionPreference = "Stop"
-          if (Test-Path "repro/run.ps1") {
-            & "repro/run.ps1"
-          } else {
-            Write-Host "No reproducer is staged. Windows runner smoke test passed."
-          }
+          python -m compileall -q \
+            repro/at_wal_006_controls.py \
+            repro/tests/test_at_wal_006_controls.py
+
+      - name: Lint sanitized controls
+        run: |
+          python -m ruff check \
+            repro/at_wal_006_controls.py \
+            repro/tests/test_at_wal_006_controls.py
+
+      - name: Verify formatting
+        run: |
+          python -m ruff format --check \
+            repro/at_wal_006_controls.py \
+            repro/tests/test_at_wal_006_controls.py
+
+      - name: Run bounded semantic controls
+        env:
+          PYTHONPATH: repro
+        run: python -m unittest discover -s repro/tests -v
