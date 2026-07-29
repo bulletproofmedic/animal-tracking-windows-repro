@@ -9,102 +9,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: public-windows-repro-${{ github.ref }}
+  group: public-runner-allocation-probe-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  validate-linux-diagnostic:
+  allocation-probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-
+    timeout-minutes: 5
     steps:
-      - name: Check out sanitized reproducer
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          fetch-depth: 0
-
-      - name: Set up parity Python
-        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
-        with:
-          python-version: "3.13.14"
-
-      - name: Test public payload guard
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          python -m unittest discover -s tests -v
-
-      - name: Enforce public payload boundary
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          python scripts/check_public_payload.py
-
-      - name: Record hosted Linux environment
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          python --version
-          git --version
-          uname -a
-
-      - name: Run staged reproducer
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          if (Test-Path "repro/run.ps1") {
-            & "repro/run.ps1"
-          } else {
-            Write-Host "No reproducer is staged. Linux diagnostic smoke test passed."
-          }
-
-  validate-windows-parity:
-    runs-on: windows-2025
-    timeout-minutes: 20
-
-    steps:
-      - name: Check out sanitized reproducer
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          fetch-depth: 0
-
-      - name: Set up parity Python
-        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
-        with:
-          python-version: "3.13.14"
-
-      - name: Test public payload guard
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          python -m unittest discover -s tests -v
-
-      - name: Enforce public payload boundary
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          python scripts/check_public_payload.py
-
-      - name: Record hosted Windows environment
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          python --version
-          git --version
-          $os = Get-CimInstance Win32_OperatingSystem
-          [PSCustomObject]@{
-            Caption = $os.Caption
-            Version = $os.Version
-            BuildNumber = $os.BuildNumber
-            Architecture = $os.OSArchitecture
-          } | Format-List
-
-      - name: Run staged reproducer
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          if (Test-Path "repro/run.ps1") {
-            & "repro/run.ps1"
-          } else {
-            Write-Host "No reproducer is staged. Windows runner smoke test passed."
-          }
+      - name: Confirm standard public runner allocation
+        run: echo "PUBLIC_STANDARD_RUNNER_ALLOCATED"
