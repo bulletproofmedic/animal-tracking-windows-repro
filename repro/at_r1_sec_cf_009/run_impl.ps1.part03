@@ -1,0 +1,124 @@
+        Copy-Item $Output (Join-Path $CaseRoot "CF009-ACL-SYSTEM-001.json") -Force
+        return [ordered]@{
+            exit_code = [int]$Task.LastTaskResult
+            command = "LocalSystem scheduled task packaged probe"
+            artifacts = @((Join-Path $CaseRoot "CF009-ACL-SYSTEM-001.json"))
+        }
+    } | Out-Null
+    if ($SystemTaskName) {
+        Unregister-ScheduledTask -TaskName $SystemTaskName -Confirm:$false -ErrorAction SilentlyContinue
+        $SystemTaskName = $null
+    }
+
+    Invoke-ObservedCase "CF009-BUNDLE-001" {
+        $Output = Join-Path $CaseRoot "CF009-BUNDLE-001.json"
+        $Result = Invoke-Helper @("bundle","--data-root",$DataRoot,"--filename","support-bundle.zip","--output",$Output)
+        return [ordered]@{
+            exit_code = $Result.exit_code
+            command = $Result.command
+            artifacts = @($Output, (Join-Path $DataRoot "support\support-bundle.zip"))
+        }
+    } | Out-Null
+
+    foreach ($Phase in @("workspace","temporary","activated")) {
+        $Id = "CF009-INT-$($Phase.ToUpperInvariant())"
+        $Output = Join-Path $CaseRoot "$Id.json"
+        $Expected = switch ($Phase) {
+            "workspace" { 91 }
+            "temporary" { 92 }
+            "activated" { 93 }
+        }
+        Invoke-ObservedCase $Id {
+            $Result = Invoke-Helper @(
+                "bundle","--data-root",$DataRoot,"--filename","$Id.zip",
+                "--interrupt-phase",$Phase,"--output",$Output
+            )
+            return [ordered]@{
+                exit_code = $Result.exit_code
+                command = $Result.command
+                artifacts = @($Output)
+            }
+        } -ExpectedExitCodes @($Expected) | Out-Null
+
+        Invoke-ObservedCase "$Id-CLEANUP" {
+            $CleanupOutput = Join-Path $CaseRoot "$Id-CLEANUP.json"
+            $Result = Invoke-Helper @("cleanup","--data-root",$DataRoot,"--output",$CleanupOutput)
+            return [ordered]@{
+                exit_code = $Result.exit_code
+                command = $Result.command
+                artifacts = @($CleanupOutput)
+            }
+        } | Out-Null
+    }
+
+    Invoke-ObservedCase "CF009-RESTART-001" {
+        $CleanupOutput = Join-Path $CaseRoot "CF009-RESTART-CLEANUP.json"
+        $CreateOutput = Join-Path $CaseRoot "CF009-RESTART-001.json"
+        $Cleanup = Invoke-Helper @("cleanup","--data-root",$DataRoot,"--output",$CleanupOutput)
+        if ($Cleanup.exit_code -ne 0) { return $Cleanup }
+        $Create = Invoke-Helper @("bundle","--data-root",$DataRoot,"--filename","post-restart.zip","--output",$CreateOutput)
+        $GeneratedRoot = Join-Path $EvidenceRoot "generated"
+        New-Item -ItemType Directory -Path $GeneratedRoot -Force | Out-Null
+        $NormalBundle = Join-Path $DataRoot "support\support-bundle.zip"
+        $RestartBundle = Join-Path $DataRoot "support\post-restart.zip"
+        if (Test-Path $NormalBundle) { Copy-Item $NormalBundle (Join-Path $GeneratedRoot "support-bundle.zip") -Force }
+        if (Test-Path $RestartBundle) { Copy-Item $RestartBundle (Join-Path $GeneratedRoot "post-restart.zip") -Force }
+        return [ordered]@{
+            exit_code = $Create.exit_code
+            command = "$($Cleanup.command); $($Create.command)"
+            artifacts = @(
+                $CleanupOutput,
+                $CreateOutput,
+                (Join-Path $GeneratedRoot "support-bundle.zip"),
+                (Join-Path $GeneratedRoot "post-restart.zip")
+            )
+        }
+    } | Out-Null
+
+    Invoke-ObservedCase "CF009-UPGRADE-001" {
+        Remove-Item $InstallRoot -Recurse -Force -ErrorAction SilentlyContinue
+        $First = Install-PackageCandidate -CandidateRoot $PackageRoot -TargetRoot $InstallRoot
+        $InstalledExe = Join-Path $InstallRoot "AnimalTrackingNtfsAcceptance.exe"
+        $Before = Get-Sha256 $InstalledExe
+        $DataMarker = Join-Path $DataRoot "upgrade-data-marker.txt"
+        Set-Content $DataMarker "synthetic-data-preserved" -Encoding utf8
+        $Second = Install-PackageCandidate -CandidateRoot $PackageRoot -TargetRoot $InstallRoot
+        $After = Get-Sha256 $InstalledExe
+        $Observation = [ordered]@{
+            installed_sha256_before = $Before
+            installed_sha256_after = $After
+            data_marker_preserved = (Test-Path $DataMarker)
+            previous_package_retained = [bool]$Second.previous
+        }
+        $Observation | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $CaseRoot "CF009-UPGRADE-001.json") -Encoding utf8
+        $Code = if ($Before -eq $After -and (Test-Path $DataMarker) -and $Second.previous) {0} else {41}
+        return [ordered]@{
+            exit_code = $Code
+            command = "staged per-user package install and upgrade"
+            artifacts = @((Join-Path $CaseRoot "CF009-UPGRADE-001.json"))
+            observation = $Observation
+        }
+    } | Out-Null
+
+    Invoke-ObservedCase "CF009-UPGRADE-INTERRUPT-001" {
+        $InstalledExe = Join-Path $InstallRoot "AnimalTrackingNtfsAcceptance.exe"
+        $Before = Get-Sha256 $InstalledExe
+        $Interrupted = $false
+        try {
+            Install-PackageCandidate -CandidateRoot $PackageRoot -TargetRoot $InstallRoot -InjectBeforeSwap | Out-Null
+        } catch {
+            $Interrupted = $true
+        }
+        $After = Get-Sha256 $InstalledExe
+        $Observation = [ordered]@{
+            interruption_observed = $Interrupted
+            installed_sha256_before = $Before
+            installed_sha256_after = $After
+            active_package_unchanged = ($Before -eq $After)
+        }
+        $Observation | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $CaseRoot "CF009-UPGRADE-INTERRUPT-001.json") -Encoding utf8
+        $Code = if ($Interrupted -and $Before -eq $After) {0} else {42}
+        return [ordered]@{
+            exit_code = $Code
+            command = "injected interruption before package activation"
+            artifacts = @((Join-Path $CaseRoot "CF009-UPGRADE-INTERRUPT-001.json"))
