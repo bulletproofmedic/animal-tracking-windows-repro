@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - diag/r1-application-security-events-cf003
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
