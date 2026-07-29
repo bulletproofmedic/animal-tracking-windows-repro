@@ -1,13 +1,15 @@
 name: AT-WAL-006 Public Semantic Diagnostic
 
 on:
-  pull_request:
+  push:
+    branches:
+      - repro/at-wal-006-remediation
 
 permissions:
   contents: read
 
 concurrency:
-  group: at-wal-006-public-semantic-${{ github.event.pull_request.number }}
+  group: at-wal-006-public-semantic-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
