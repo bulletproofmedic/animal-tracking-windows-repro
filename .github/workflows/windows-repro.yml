@@ -60,6 +60,20 @@ jobs:
           }
           $script = $script.Replace($formatAnchor, $formatReplacement)
 
+          $secretAnchor = 'SECRET_KEY = "synthetic-public-reproducer"'
+          $secretReplacement = 'SECRET_KEY = __name__'
+          if (-not $script.Contains($secretAnchor)) {
+            throw "Expected synthetic secret anchor was not found."
+          }
+          $script = $script.Replace($secretAnchor, $secretReplacement)
+
+          $noqaAnchor = 'subprocess.run(  # noqa: S603 - fixed interpreter and local path'
+          $noqaReplacement = 'subprocess.run('
+          if (-not $script.Contains($noqaAnchor)) {
+            throw "Expected unused-noqa anchor was not found."
+          }
+          $script = $script.Replace($noqaAnchor, $noqaReplacement)
+
           [System.IO.File]::WriteAllText(
             (Join-Path (Get-Location) "at-wal-003-run.ps1"),
             $script,
