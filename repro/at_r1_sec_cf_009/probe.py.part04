@@ -1,0 +1,146 @@
+    if support_dir.exists():
+        for path in sorted(support_dir.iterdir()):
+            if path.name.startswith(".public-cf009-work-") and path.is_dir():
+                shutil.rmtree(path, ignore_errors=False)
+                removed.append(str(path))
+            elif path.name.startswith(".") and path.name.endswith(".tmp") and path.is_file():
+                path.unlink()
+                removed.append(str(path))
+            elif path.suffix.casefold() == ".zip" and path.is_file():
+                valid = False
+                try:
+                    with zipfile.ZipFile(path) as archive:
+                        valid = sorted(archive.namelist()) == [
+                            "logs/redacted-001.jsonl",
+                            "metadata.json",
+                        ]
+                except (OSError, zipfile.BadZipFile):
+                    valid = False
+                if valid:
+                    protect_file(path)
+                    retained.append(file_observation(path, kind="archived-support-bundle"))
+                else:
+                    path.unlink()
+                    removed.append(str(path))
+    payload = {
+        "schema_version": "1.0",
+        "command": "cleanup",
+        "removed": removed,
+        "retained": retained,
+        "timestamp": utc_now(),
+    }
+    write_json(args.output, payload)
+    return 0
+
+
+def command_fail_closed(args: argparse.Namespace) -> int:
+    data_root = args.data_root.resolve()
+    if data_root.exists():
+        shutil.rmtree(data_root)
+    data_root.mkdir(parents=True)
+    scenario = args.scenario
+    os.environ["AT_PUBLIC_ACL_FAULT"] = scenario
+    exception: dict[str, str] | None = None
+    destination = data_root / "support" / "fault.zip"
+    try:
+        if scenario.startswith("logging-"):
+            log_dir = data_root / "logs"
+            protect_directory(log_dir)
+            log_path = log_dir / "animal-tracking.log"
+            log_path.touch()
+            handler = ProtectedRotatingFileHandler(log_path, maxBytes=128, backupCount=2)
+            handler.close()
+        else:
+            build_bundle(data_root, "fault.zip", None, data_root / "fault-inner.json")
+    except Exception as error:
+        exception = {"type": type(error).__name__, "message": str(error)}
+    finally:
+        os.environ.pop("AT_PUBLIC_ACL_FAULT", None)
+    failed_closed = exception is not None and not destination.exists()
+    payload = {
+        "schema_version": "1.0",
+        "command": "fail-closed",
+        "scenario": scenario,
+        "failed_closed": failed_closed,
+        "exception": exception,
+        "destination_exists": destination.exists(),
+        "timestamp": utc_now(),
+    }
+    write_json(args.output, payload)
+    return 0 if failed_closed else 31
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    metadata = subparsers.add_parser("metadata")
+    metadata.add_argument("--output", type=Path, required=True)
+    metadata.set_defaults(function=command_metadata)
+
+    probe = subparsers.add_parser("probe")
+    probe.add_argument("--target-file", type=Path, required=True)
+    probe.add_argument("--target-dir", type=Path, required=True)
+    probe.add_argument("--expect", choices=("allow", "deny"), required=True)
+    probe.add_argument("--output", type=Path, required=True)
+    probe.set_defaults(function=command_probe)
+
+    rollover = subparsers.add_parser("rollover")
+    rollover.add_argument("--data-root", type=Path, required=True)
+    rollover.add_argument("--rollovers", type=int, default=11)
+    rollover.add_argument("--output", type=Path, required=True)
+    rollover.set_defaults(function=command_rollover)
+
+    bundle = subparsers.add_parser("bundle")
+    bundle.add_argument("--data-root", type=Path, required=True)
+    bundle.add_argument("--filename", required=True)
+    bundle.add_argument("--interrupt-phase", choices=("workspace", "temporary", "activated"))
+    bundle.add_argument("--output", type=Path, required=True)
+    bundle.set_defaults(function=command_bundle)
+
+    cleanup = subparsers.add_parser("cleanup")
+    cleanup.add_argument("--data-root", type=Path, required=True)
+    cleanup.add_argument("--output", type=Path, required=True)
+    cleanup.set_defaults(function=command_cleanup)
+
+    fail_closed = subparsers.add_parser("fail-closed")
+    fail_closed.add_argument("--data-root", type=Path, required=True)
+    fail_closed.add_argument(
+        "--scenario",
+        choices=("logging-apply", "logging-verify", "bundle-apply", "bundle-verify"),
+        required=True,
+    )
+    fail_closed.add_argument("--output", type=Path, required=True)
+    fail_closed.set_defaults(function=command_fail_closed)
+
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    try:
+        return int(args.function(args))
+    except Exception as error:
+        output = getattr(args, "output", None)
+        if isinstance(output, Path):
+            try:
+                write_json(
+                    output,
+                    {
+                        "schema_version": "1.0",
+                        "command": getattr(args, "command", "unknown"),
+                        "error": {
+                            "type": type(error).__name__,
+                            "message": str(error),
+                        },
+                        "timestamp": utc_now(),
+                    },
+                )
+            except Exception:
+                pass
+        print(f"{type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
