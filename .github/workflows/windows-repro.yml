@@ -33,6 +33,7 @@ jobs:
           if ($actual -ne $env:CHECKOUT_SHA) {
             throw "Checkout identity mismatch: expected $env:CHECKOUT_SHA, got $actual"
           }
+          Add-Content -Path $env:GITHUB_ENV -Value "AT_PUBLIC_COMMIT=$actual"
           Write-Host "Checked out sanitized public commit $actual"
           Write-Host "Fetched complete ancestry only for branch $env:CHECKOUT_REF"
 
