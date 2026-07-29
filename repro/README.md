@@ -1,24 +1,15 @@
-# Reproducer staging area
+# AT-WAL-001 bounded public diagnostic
 
-Place only the minimum sanitized files needed to reproduce one Windows-specific defect in this directory.
+This is a fresh synthetic reproducer for five control questions associated with private remediation candidate `2d5f1b33d0fc973a6dee021dea8a73bc24b2f38a`.
 
-Recommended structure:
+It contains no private Git history, private repository URL, credentials, configuration, coordinates, maps, media, database, logs, backups, or production data.
 
-```text
-repro/
-├── run.ps1
-├── src/
-├── tests/
-└── requirements.lock
-```
+The diagnostic covers:
 
-`run.ps1` is the workflow entry point. It must:
+1. stable external startup locking, one persisted secret, and losing-process no-mutation behavior;
+2. service-layer interval chronology, predecessor identity, retirement, and rollback semantics;
+3. review-resolution workflow gating and truthful before-state capture;
+4. fail-closed manifest validation against committed Git blob bytes rather than checkout-transformed bytes;
+5. deterministic exact commit-tree enumeration with separate worktree status and explicit executable, symlink, submodule, and LFS-pointer classification.
 
-- stop on the first error;
-- install only explicitly pinned dependencies;
-- use synthetic fixtures;
-- run the smallest deterministic command that reproduces the defect;
-- return a nonzero exit code while the defect is present;
-- return zero only after the correction passes.
-
-Do not copy a private branch, `.git` directory, repository bundle, database, media corpus, backup, export, or unrelated project code into this directory.
+Database-level interval constraints are intentionally excluded because the private migration sequence is separately owned. A passing public result is diagnostic only and does not validate the private branch, close a finding, authorize merge, or replace required exact-private-commit Windows validation and independent revalidation.
