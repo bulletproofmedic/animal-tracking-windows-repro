@@ -18,15 +18,34 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Check out sanitized reproducer
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          fetch-depth: 0
+      - name: Check out sanitized reproducer with native Git
+        shell: pwsh
+        env:
+          CHECKOUT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          git init .
+          git remote add origin "https://github.com/$env:GITHUB_REPOSITORY.git"
+          git fetch --no-tags --prune origin "+refs/heads/*:refs/remotes/origin/*"
+          git checkout --detach $env:CHECKOUT_SHA
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne $env:CHECKOUT_SHA) {
+            throw "Checkout identity mismatch: expected $env:CHECKOUT_SHA, got $actual"
+          }
+          Write-Host "Checked out sanitized public commit $actual"
 
-      - name: Set up parity Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.13.14"
+      - name: Select hosted Python 3.13
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $python = (& py -3.13 -c "import sys; print(sys.executable)").Trim()
+          if (-not $python) { throw "Hosted Python 3.13 was not found." }
+          $pythonDirectory = Split-Path -Parent $python
+          $pythonScripts = Join-Path $pythonDirectory "Scripts"
+          $env:PATH = "$pythonDirectory;$pythonScripts;$env:PATH"
+          Add-Content -Path $env:GITHUB_PATH -Value $pythonDirectory
+          Add-Content -Path $env:GITHUB_PATH -Value $pythonScripts
+          python --version
 
       - name: Test public payload guard
         shell: pwsh
@@ -54,17 +73,30 @@ jobs:
             Architecture = $os.OSArchitecture
           } | Format-List
 
-      - name: Run staged reproducer
+      - name: Run staged reproducer and emit bounded evidence
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
+          $ErrorActionPreference = "Continue"
           & "repro/run.ps1"
+          $runExitCode = $LASTEXITCODE
 
-      - name: Upload bounded diagnostic evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: at-r1-sec-cf-009-public-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
-          path: artifacts/at-r1-sec-cf-009
-          if-no-files-found: error
-          retention-days: 14
+          $evidenceRoot = "artifacts/at-r1-sec-cf-009"
+          $runRecord = Join-Path $evidenceRoot "evidence/acceptance-run.json"
+          $checksums = Join-Path $evidenceRoot "EVIDENCE_SHA256SUMS.txt"
+
+          if (Test-Path $runRecord -PathType Leaf) {
+            Write-Host "===== BEGIN ACCEPTANCE RUN RECORD ====="
+            Get-Content $runRecord -Raw -Encoding utf8
+            Write-Host "===== END ACCEPTANCE RUN RECORD ====="
+          } else {
+            Write-Error "Acceptance run record was not produced."
+            if ($runExitCode -eq 0) { $runExitCode = 90 }
+          }
+
+          if (Test-Path $checksums -PathType Leaf) {
+            Write-Host "===== BEGIN EVIDENCE SHA256SUMS ====="
+            Get-Content $checksums -Raw -Encoding ascii
+            Write-Host "===== END EVIDENCE SHA256SUMS ====="
+          }
+
+          exit $runExitCode
