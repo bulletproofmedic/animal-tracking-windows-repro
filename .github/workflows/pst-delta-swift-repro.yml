@@ -1,0 +1,41 @@
+name: PST-DELTA Swift Reproducer
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - repro/pst-delta-v1-1-consumer
+    paths:
+      - ".github/workflows/pst-delta-swift-repro.yml"
+      - "repro/pst_delta_swift/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pst-delta-swift-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile-and-test:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Check out sanitized reproducer
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Record Swift environment
+        run: |
+          swift --version
+          xcodebuild -version
+      - name: Resolve exact dependency
+        working-directory: repro/pst_delta_swift
+        run: swift package resolve
+      - name: Compile and run tests
+        working-directory: repro/pst_delta_swift
+        run: swift test --parallel
+      - name: Verify executable discovery and dry run
+        working-directory: repro/pst_delta_swift
+        run: |
+          swift run PersistenceProofRunner --list | tee /tmp/pst_cases.txt
+          test "$(grep -c '^PST-T0' /tmp/pst_cases.txt)" -eq 35
+          swift run PersistenceProofRunner --dry-run
