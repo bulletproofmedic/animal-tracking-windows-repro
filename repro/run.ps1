@@ -15,7 +15,8 @@ python -m ruff check `
   repro/at_wal_006_controls.py `
   repro/tests/test_at_wal_006_controls.py
 
-# Temporary diagnostic mode: print the exact formatter patch and fail closed.
-python -m ruff format --diff `
+python -m ruff format --check `
   repro/at_wal_006_controls.py `
   repro/tests/test_at_wal_006_controls.py
+
+python -m unittest discover -s repro/tests -v
