@@ -1,9 +1,12 @@
 name: Public Windows Reproducer
 
 on:
-  workflow_dispatch:
-  push:
   pull_request:
+    paths:
+      - ".github/workflows/windows-repro.yml"
+      - "repro/**"
+      - "scripts/**"
+      - "tests/**"
 
 permissions:
   contents: read
