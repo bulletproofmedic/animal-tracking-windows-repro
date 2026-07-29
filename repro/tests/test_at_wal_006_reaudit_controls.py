@@ -88,9 +88,13 @@ class AtWal006ReauditSuccessorTests(unittest.TestCase):
         self.assertEqual([row.count_value for row in rows], [2])
 
     def test_event_and_child_bounds_are_independent_and_fail_closed(self) -> None:
-        enforce_bounds(tuple(event(str(index)) for index in range(MAX_EVENTS)), MAX_OBSERVATIONS)
+        enforce_bounds(
+            tuple(event(str(index)) for index in range(MAX_EVENTS)), MAX_OBSERVATIONS
+        )
         with self.assertRaises(PopulationLimitExceeded):
-            enforce_bounds(tuple(event(str(index)) for index in range(MAX_EVENTS + 1)), 0)
+            enforce_bounds(
+                tuple(event(str(index)) for index in range(MAX_EVENTS + 1)), 0
+            )
         with self.assertRaises(PopulationLimitExceeded):
             enforce_bounds((), MAX_OBSERVATIONS + 1)
 
@@ -132,7 +136,9 @@ class AtWal006ReauditSuccessorTests(unittest.TestCase):
             with self.subTest(boundary=index), self.assertRaises(SourceStateChanged):
                 staged_snapshot_validation(SNAPSHOT, mutated)
 
-    def test_canonical_input_hash_includes_species_labels_and_unknown_semantics(self) -> None:
+    def test_canonical_input_hash_includes_species_labels_and_unknown_semantics(
+        self,
+    ) -> None:
         original = event("event-1", ACCEPTED, observation("a"))
         renamed = event(
             "event-1",
@@ -173,7 +179,9 @@ class AtWal006ReauditSuccessorTests(unittest.TestCase):
             with self.subTest(mutation=key):
                 self.assertTrue(exact_blob_manifest_rejects(expected, mutated))
 
-    def test_hash_is_stable_across_process_hash_seeds_and_language_environment(self) -> None:
+    def test_hash_is_stable_across_process_hash_seeds_and_language_environment(
+        self,
+    ) -> None:
         script = """
 from at_wal_006_reaudit_controls import Event, Observation, SourceSnapshot, report_input_sha256
 s=SourceSnapshot('state-1',1)
