@@ -34,7 +34,6 @@ from at_wal_006_controls import (
     validate_query,
 )
 
-
 SNAPSHOT = SourceSnapshot("state-synthetic-4", 4)
 
 
@@ -138,7 +137,9 @@ class AtWal006ControlTests(unittest.TestCase):
             empty_observation_csv.decode().splitlines()[0],
             populated_observation_csv.decode().splitlines()[0],
         )
-        self.assertEqual(tuple(empty_event_csv.decode().splitlines()[0].split(",")), EVENT_SCHEMA)
+        self.assertEqual(
+            tuple(empty_event_csv.decode().splitlines()[0].split(",")), EVENT_SCHEMA
+        )
         self.assertEqual(
             tuple(empty_observation_csv.decode().splitlines()[0].split(",")),
             OBSERVATION_SCHEMA,
@@ -158,7 +159,10 @@ class AtWal006ControlTests(unittest.TestCase):
     def test_event_level_child_grouping_is_prohibited(self) -> None:
         source = (event("event-1", observation("obs-1")),)
         for group_by in ("species", "direction"):
-            with self.subTest(group_by=group_by), self.assertRaises(UnsupportedComparison):
+            with (
+                self.subTest(group_by=group_by),
+                self.assertRaises(UnsupportedComparison),
+            ):
                 event_report(
                     source,
                     group_by=group_by,
