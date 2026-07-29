@@ -3,11 +3,47 @@ $PSNativeCommandUseErrorActionPreference = $true
 
 python --version
 git --version
+
+$testPath = "repro/test_manifest_ci_candidate.py"
+$committedTestHash = (Get-FileHash $testPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$source = Get-Content $testPath -Raw
+$old = '            mutated_source = commit(repository, f"{name}-source")'
+$new = @'
+            if name == "mode_mutation":
+                run(
+                    repository,
+                    "git",
+                    "-c",
+                    "user.name=Diagnostic",
+                    "-c",
+                    "user.email=d@example.invalid",
+                    "commit",
+                    "-q",
+                    "-m",
+                    f"{name}-source",
+                )
+                mutated_source = out(repository, "git", "rev-parse", "HEAD")
+            else:
+                mutated_source = commit(repository, f"{name}-source")
+'@
+if (-not $source.Contains($old)) {
+    throw "The bounded Windows mode-mutation harness anchor was not found."
+}
+$source = $source.Replace($old, $new)
+[System.IO.File]::WriteAllText(
+    (Resolve-Path $testPath),
+    $source,
+    [System.Text.UTF8Encoding]::new($false)
+)
+
 python -m compileall -q repro
 
 $candidateHash = (Get-FileHash "repro/manifest_ci_candidate.py" -Algorithm SHA256).Hash.ToLowerInvariant()
-$testHash = (Get-FileHash "repro/test_manifest_ci_candidate.py" -Algorithm SHA256).Hash.ToLowerInvariant()
+$executedTestHash = (Get-FileHash $testPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$runScriptHash = (Get-FileHash "repro/run.ps1" -Algorithm SHA256).Hash.ToLowerInvariant()
 Write-Host "MANIFEST_CANDIDATE_SHA256=$candidateHash"
-Write-Host "MANIFEST_TEST_SHA256=$testHash"
+Write-Host "MANIFEST_TEST_COMMITTED_SHA256=$committedTestHash"
+Write-Host "MANIFEST_TEST_EXECUTED_SHA256=$executedTestHash"
+Write-Host "MANIFEST_RUN_SCRIPT_SHA256=$runScriptHash"
 
-python repro/test_manifest_ci_candidate.py
+python $testPath
