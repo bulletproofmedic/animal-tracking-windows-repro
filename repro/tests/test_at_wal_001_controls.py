@@ -103,9 +103,9 @@ def test_two_process_cold_start_has_one_secret_and_no_loser_mutation(tmp_path: P
     )
     assert restart.returncode == 0, restart.stderr
     second = json.loads(restart_result.read_text(encoding="utf-8"))
-    persisted = (tmp_path / "governed" / "config" / "service.secret").read_text(
-        encoding="ascii"
-    ).strip()
+    persisted = (
+        (tmp_path / "governed" / "config" / "service.secret").read_text(encoding="ascii").strip()
+    )
     assert first["secret"] == second["secret"] == persisted
 
 
@@ -207,7 +207,9 @@ def _initialize_git_fixture(repo: Path) -> bytes:
     _run_git(repo, "update-index", "--chmod=+x", "tool.py")
     _run_git(repo, "commit", "-qm", "mark executable")
 
-    target_blob = _run_git(repo, "hash-object", "-w", "--stdin", input_bytes=b"authority.txt").strip()
+    target_blob = _run_git(
+        repo, "hash-object", "-w", "--stdin", input_bytes=b"authority.txt"
+    ).strip()
     _run_git(
         repo,
         "update-index",
