@@ -1,0 +1,62 @@
+            observation = $Observation
+        }
+    } | Out-Null
+
+    foreach ($Scenario in @("logging-apply","logging-verify","bundle-apply","bundle-verify")) {
+        $Id = "CF009-FAILCLOSED-$($Scenario.ToUpperInvariant())"
+        Invoke-ObservedCase $Id {
+            $Output = Join-Path $CaseRoot "$Id.json"
+            $Result = Invoke-Helper @(
+                "fail-closed","--data-root",(Join-Path $DataRoot $Id),
+                "--scenario",$Scenario,"--output",$Output
+            )
+            return [ordered]@{
+                exit_code = $Result.exit_code
+                command = $Result.command
+                artifacts = @($Output)
+            }
+        } | Out-Null
+    }
+
+    $Unexpected = @($Run.cases | Where-Object status -ne "OBSERVED_EXPECTED")
+    $Run.final_disposition = if ($Unexpected.Count -eq 0) {
+        "PUBLIC_DIAGNOSTIC_OBSERVED_EXPECTED"
+    } else {
+        "PUBLIC_DIAGNOSTIC_HAS_UNEXPECTED_RESULTS"
+    }
+} finally {
+    if ($SystemTaskName) {
+        Unregister-ScheduledTask -TaskName $SystemTaskName -Confirm:$false -ErrorAction SilentlyContinue
+    }
+    if ($TempUser) {
+        Remove-LocalUser -Name $TempUserName -ErrorAction SilentlyContinue
+    }
+    Remove-Item $PublicTemp -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item $DataRoot -Recurse -Force -ErrorAction SilentlyContinue
+
+    $Run.finished_at = (Get-Date).ToUniversalTime().ToString("o")
+    $Run.case_counts = [ordered]@{
+        total = @($Run.cases).Count
+        observed_expected = @($Run.cases | Where-Object status -eq "OBSERVED_EXPECTED").Count
+        not_run = @($Run.cases | Where-Object status -eq "NOT_RUN").Count
+        unexpected = @($Run.cases | Where-Object status -notin @("OBSERVED_EXPECTED","NOT_RUN")).Count
+    }
+    $Run | ConvertTo-Json -Depth 15 | Set-Content (Join-Path $EvidenceRoot "acceptance-run.json") -Encoding utf8
+
+    $EvidenceFiles = Get-ChildItem $EvidenceRoot -File -Recurse | Sort-Object FullName | ForEach-Object {
+        [ordered]@{
+            path = $_.FullName.Substring($EvidenceRoot.Length + 1).Replace("\","/")
+            bytes = $_.Length
+            sha256 = Get-Sha256 $_.FullName
+        }
+    }
+    [ordered]@{
+        schema_version = "1.0"
+        generated_at = (Get-Date).ToUniversalTime().ToString("o")
+        files = $EvidenceFiles
+    } | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $ArtifactRoot "evidence-manifest.json") -Encoding utf8
+}
+
+if ($Run.final_disposition -ne "PUBLIC_DIAGNOSTIC_OBSERVED_EXPECTED") {
+    throw "One or more public diagnostic cases produced unexpected results."
+}
