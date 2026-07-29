@@ -1,87 +1,142 @@
 from __future__ import annotations
-import json,re,subprocess
+
 from collections import Counter
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Any
-MANIFEST='IMPLEMENTATION_SOURCE_MANIFEST.json'; REPOSITORY='synthetic/manifest-repository'; HEX40=re.compile(r'^[0-9a-f]{40}$')
-def text(root:Path,*a:str)->str:return subprocess.check_output(['git',*a],cwd=root,text=True,encoding='utf-8').strip()
-def raw(root:Path,*a:str)->bytes:return subprocess.check_output(['git',*a],cwd=root)
-def commit(root:Path,ref:str)->str:return text(root,'rev-parse','--verify',f'{ref}^{{commit}}')
-def tree(root:Path,ref:str)->str:return text(root,'rev-parse','--verify',f'{ref}^{{tree}}')
-def parents(root:Path,ref:str)->list[str]:return text(root,'rev-list','--parents','-n','1',ref).split()[1:]
-def category(p:str)->str:
- if p.startswith('.github/workflows/'):return 'CI_WORKFLOW'
- if '/migrations/' in p or p.startswith('migrations/'):return 'MIGRATION'
- if p.startswith('src/'):return 'APPLICATION_SOURCE'
- if p.startswith('tests/'):return 'TEST'
- if p.startswith('requirements/') or p.endswith(('.lock','lock.json')):return 'DEPENDENCY_LOCK'
- if p.startswith('scripts/'):return 'VALIDATION_SCRIPT'
- if p.startswith('docs/governance/'):return 'GOVERNANCE'
- if p.startswith(('docs/remediation/','docs/audits/')):return 'EVIDENCE'
- if '/fixtures/' in p or p.startswith('fixtures/'):return 'FIXTURE'
- if p.startswith(('proofs/','ios/')):return 'BOUNDED_PROOF'
- if p.startswith('docs/'):return 'DOCUMENTATION'
- return 'CONFIGURATION'
-def paths(root:Path,source:str)->list[str]:
- out=[]
- for rec in raw(root,'ls-tree','-r','-z','--full-tree',source).split(b'\0'):
-  if not rec:continue
-  meta,name=rec.split(b'\t',1); _,kind,_=meta.decode().split(); p=name.decode('utf-8')
-  if kind!='blob':raise RuntimeError(f'unsupported {kind} at {p}')
-  if p!=MANIFEST:out.append(p)
- out.sort()
- if len(out)!=len(set(out)):raise RuntimeError('duplicate path')
- return out
-def build(root:Path,source_ref:str,base_ref:str,state:str)->dict[str,Any]:
- source,base=commit(root,source_ref),commit(root,base_ref)
- if subprocess.run(['git','merge-base','--is-ancestor',base,source],cwd=root).returncode:raise RuntimeError('base not ancestor')
- ps=paths(root,source); groups={}
- for p in ps:
-  d,n=p.rsplit('/',1) if '/' in p else ('',p);groups.setdefault(d,[]).append(n)
- counts=Counter(category(p) for p in ps)
- return {'schema_version':5,'manifest_format':'ANIMAL_TRACKING_IMPLEMENTATION_SOURCE_MANIFEST','binding_mode':'GIT_TREE_MERKLE_PATH_INVENTORY','state':state,'repository':REPOSITORY,'source_commit':source,'source_git_tree':tree(root,source),'source_base_commit':base,'authorized_scope':'Release 1 only','path_inventory':[{'directory':d,'entries':groups[d]} for d in sorted(groups)],'summary':{'total_file_count':len(ps),'count_by_category':dict(sorted(counts.items())),'excluded_entry_count':1},'excluded_entries':[{'path':MANIFEST,'reason':'self-referential output'}]}
-def flatten(groups:list[dict])->list[str]:
- out=[]
- for g in groups:
-  d=g['directory']; entries=g['entries']
-  if entries!=sorted(entries):raise ValueError('unsorted entries')
-  out.extend(f'{d}/{n}' if d else n for n in entries)
- return out
-def validate(root:Path,payload:dict,base_ref:str,state:str,context:str,head_ref:str,manifest_file:Path)->list[str]:
- e=[]; required={'schema_version','manifest_format','binding_mode','state','repository','source_commit','source_git_tree','source_base_commit','authorized_scope','path_inventory','summary','excluded_entries'}
- if set(payload)!=required:e.append('schema')
- for k,v in {'schema_version':5,'manifest_format':'ANIMAL_TRACKING_IMPLEMENTATION_SOURCE_MANIFEST','binding_mode':'GIT_TREE_MERKLE_PATH_INVENTORY','state':state,'repository':REPOSITORY,'authorized_scope':'Release 1 only'}.items():
-  if payload.get(k)!=v:e.append(k)
- source=payload.get('source_commit');base=commit(root,base_ref)
- if not isinstance(source,str) or not HEX40.fullmatch(source):e.append('source syntax');return e
- try:source=commit(root,source)
- except subprocess.CalledProcessError:e.append('source resolve');return e
- if payload.get('source_base_commit')!=base:e.append('base')
- if payload.get('source_git_tree')!=tree(root,source):e.append('tree')
- if subprocess.run(['git','merge-base','--is-ancestor',base,source],cwd=root).returncode:e.append('ancestry')
- expected=paths(root,source)
- try:listed=flatten(payload.get('path_inventory',[]))
- except Exception:e.append('inventory schema');listed=[]
- if listed!=sorted(listed):e.append('inventory order')
- if len(listed)!=len(set(listed)):e.append('duplicate')
- if set(expected)-set(listed):e.append('missing')
- if set(listed)-set(expected):e.append('extra')
- counts=Counter(category(p) for p in listed)
- if payload.get('summary')!={'total_file_count':len(expected),'count_by_category':dict(sorted(counts.items())),'excluded_entry_count':1}:e.append('summary')
- if payload.get('excluded_entries')!=[{'path':MANIFEST,'reason':'self-referential output'}]:e.append('exclusion')
- head,checkout=commit(root,head_ref),commit(root,'HEAD'); hp=parents(root,head); first=hp[0] if hp else None
- changed=[p for p in text(root,'diff','--name-only','--no-renames',source,head).splitlines() if p]
- if first!=source:e.append('head source parent')
- if changed!=[MANIFEST]:e.append('head changed paths')
- try:
-  if raw(root,'show',f'{head}:{MANIFEST}')!=manifest_file.read_bytes():e.append('head manifest bytes')
- except Exception:e.append('head manifest bytes')
- cp=parents(root,checkout)
- if context=='exact-head':
-  if checkout!=head:e.append('exact head')
- elif context=='merge-ref':
-  if checkout==head:e.append('merge distinct')
-  if len(cp)<2:e.append('merge parents')
-  if head not in cp:e.append('merge direct parent')
- else:e.append('context')
- return e
+
+MANIFEST_PATH = "IMPLEMENTATION_SOURCE_MANIFEST.json"
+CONTROLLED_PATHS = (
+    ".github/workflows/ci.yml",
+    "scripts/generate_source_manifest.py",
+    "scripts/implementation_manifest_core.py",
+    "scripts/validate_implementation_source_manifest.py",
+)
+
+
+def category(path: str) -> str:
+    if path.startswith(".github/workflows/"):
+        return "CI_WORKFLOW"
+    if "/migrations/" in path or path.startswith("migrations/"):
+        return "MIGRATION"
+    if path.startswith("src/"):
+        return "APPLICATION_SOURCE"
+    if path.startswith("tests/"):
+        return "TEST"
+    if path.startswith("requirements/") or path.endswith((".lock", "lock.json")):
+        return "DEPENDENCY_LOCK"
+    if path.startswith("scripts/"):
+        return "VALIDATION_SCRIPT"
+    if path.startswith("docs/governance/"):
+        return "GOVERNANCE"
+    if path.startswith(("docs/remediation/", "docs/audits/")):
+        return "EVIDENCE"
+    if "/fixtures/" in path or path.startswith("fixtures/"):
+        return "FIXTURE"
+    if path.startswith(("proofs/", "ios/")):
+        return "BOUNDED_PROOF"
+    if path.startswith("docs/"):
+        return "DOCUMENTATION"
+    return "CONFIGURATION"
+
+
+@dataclass(frozen=True)
+class Facts:
+    base_commit: str
+    source_commit: str
+    source_tree: str
+    source_paths: tuple[str, ...]
+    base_is_ancestor: bool
+    control_commit: str
+    control_tree: str
+    control_parent: str
+    control_changed_paths: tuple[str, ...]
+    head_commit: str
+    head_tree: str
+    head_parent: str
+    head_changed_paths: tuple[str, ...]
+    manifest_bytes_match: bool
+    checkout_commit: str
+    checkout_parents: tuple[str, ...]
+
+
+def flatten_inventory(groups: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
+    paths: list[str] = []
+    errors: list[str] = []
+    group_order: list[str] = []
+    for index, group in enumerate(groups):
+        if not isinstance(group, dict) or set(group) != {"directory", "entries"}:
+            errors.append(f"group {index} schema")
+            continue
+        directory = group["directory"]
+        entries = group["entries"]
+        group_order.append(directory)
+        if entries != sorted(entries):
+            errors.append(f"entries ordering {directory}")
+        for name in entries:
+            paths.append(f"{directory}/{name}" if directory else name)
+    if group_order != sorted(group_order):
+        errors.append("group ordering")
+    if len(paths) != len(set(paths)):
+        errors.append("duplicate path")
+    return paths, errors
+
+
+def validate(manifest: dict[str, Any], facts: Facts, context: str) -> list[str]:
+    errors: list[str] = []
+    if manifest.get("schema_version") != 6:
+        errors.append("schema")
+    if manifest.get("state") != "R1_SECURITY_COMBINED_FINAL_TARGET_MANIFEST_CONTROL":
+        errors.append("state")
+    if manifest.get("source_commit") != facts.source_commit:
+        errors.append("source")
+    if manifest.get("source_git_tree") != facts.source_tree:
+        errors.append("source tree")
+    if manifest.get("source_base_commit") != facts.base_commit or not facts.base_is_ancestor:
+        errors.append("base")
+    if manifest.get("control_commit") != facts.control_commit:
+        errors.append("control")
+    if manifest.get("control_git_tree") != facts.control_tree:
+        errors.append("control tree")
+    if tuple(manifest.get("controlled_paths", ())) != tuple(sorted(CONTROLLED_PATHS)):
+        errors.append("controlled paths")
+    if facts.control_parent != facts.source_commit:
+        errors.append("control parent")
+    if facts.control_changed_paths != tuple(sorted(CONTROLLED_PATHS)):
+        errors.append("control changed paths")
+
+    paths, inventory_errors = flatten_inventory(manifest.get("path_inventory", []))
+    errors.extend(inventory_errors)
+    expected = set(facts.source_paths)
+    listed = set(paths)
+    if expected - listed:
+        errors.append("missing")
+    if listed - expected:
+        errors.append("extra")
+    counts = dict(sorted(Counter(category(path) for path in paths).items()))
+    if manifest.get("summary") != {
+        "total_file_count": len(expected),
+        "count_by_category": counts,
+        "excluded_entry_count": 1,
+    }:
+        errors.append("summary")
+
+    if facts.head_parent != facts.control_commit:
+        errors.append("head parent")
+    if facts.head_changed_paths != (MANIFEST_PATH,):
+        errors.append("head changed paths")
+    if not facts.manifest_bytes_match:
+        errors.append("manifest bytes")
+
+    if context == "exact-head":
+        if facts.checkout_commit != facts.head_commit:
+            errors.append("exact head")
+    elif context == "merge-ref":
+        if facts.checkout_commit == facts.head_commit:
+            errors.append("merge distinct")
+        if len(facts.checkout_parents) < 2:
+            errors.append("merge parents")
+        if facts.head_commit not in facts.checkout_parents:
+            errors.append("merge direct parent")
+    else:
+        errors.append("context")
+    return errors
