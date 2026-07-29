@@ -1,28 +1,168 @@
 from __future__ import annotations
-import json,os,shutil,subprocess,tempfile
-from pathlib import Path
-from manifest_ci_candidate import MANIFEST,build,validate
-STATE='R1_SECURITY_EVENTS_MANIFEST_CONTROL_SOURCE';HERE=Path(__file__).resolve().parent
-def run(root,*a,check=True):return subprocess.run(a,cwd=root,check=check,text=True,capture_output=True)
-def out(root,*a):return subprocess.check_output(a,cwd=root,text=True).strip()
-def commit(root,msg):run(root,'git','add','-A');run(root,'git','-c','user.name=Diagnostic','-c','user.email=d@example.invalid','commit','-q','-m',msg);return out(root,'git','rev-parse','HEAD')
-def checkout(root,ref):run(root,'git','checkout','--detach','-q',ref)
-def main():
- with tempfile.TemporaryDirectory(prefix='cf004-v5-') as td:
-  r=Path(td)/'repo';r.mkdir();run(r,'git','init','-q');run(r,'git','config','core.autocrlf','false')
-  for d in ['src/pkg','tests','docs','scripts','.github/workflows']:(r/d).mkdir(parents=True,exist_ok=True)
-  (r/'src/pkg/app.py').write_text('VALUE=1\n');(r/'tests/test_app.py').write_text('def test_x(): assert True\n');(r/'docs/readme.md').write_text('# synthetic\n')
-  base=commit(r,'base');shutil.copy2(HERE/'manifest_ci_candidate.py',r/'scripts/manifest_ci_candidate.py');(r/'.github/workflows/ci.yml').write_text('name: synthetic\n');source=commit(r,'source')
-  payload=build(r,source,base,STATE);(r/MANIFEST).write_text(json.dumps(payload,indent=2)+'\n',newline='\n');valid=commit(r,'manifest');valid_text=(r/MANIFEST).read_text();results=[]
-  def rec(name,expected,errors):results.append({'name':name,'expected':expected,'actual':'PASS' if not errors else 'FAIL','ok':(not errors)==(expected=='PASS')})
-  checkout(r,valid);rec('positive_exact_head','PASS',validate(r,json.loads(valid_text),base,STATE,'exact-head',valid,r/MANIFEST))
-  def mutation(name,change):
-   checkout(r,source);p=json.loads(valid_text);change(p);(r/MANIFEST).write_text(json.dumps(p,indent=2)+'\n',newline='\n');h=commit(r,name);rec(name,'FAIL',validate(r,p,base,STATE,'exact-head',h,r/MANIFEST))
-  mutation('missing_path',lambda p:(p['path_inventory'][0].__setitem__('entries',p['path_inventory'][0]['entries'][1:]),p['summary'].__setitem__('total_file_count',p['summary']['total_file_count']-1)))
-  mutation('extra_path',lambda p:(p['path_inventory'][0]['entries'].append('zz-extra.txt'),p['path_inventory'][0]['entries'].sort(),p['summary'].__setitem__('total_file_count',p['summary']['total_file_count']+1)))
-  mutation('stale_source_tree',lambda p:p.__setitem__('source_git_tree','0'*40));mutation('stale_state',lambda p:p.__setitem__('state','STALE'));mutation('stale_source_identity',lambda p:p.__setitem__('source_commit',base))
-  mutation('category_summary_mismatch',lambda p:p['summary']['count_by_category'].__setitem__('APPLICATION_SOURCE',p['summary']['count_by_category']['APPLICATION_SOURCE']+1))
-  checkout(r,valid);(r/'src/pkg/app.py').write_text('VALUE=2\n');unexpected=commit(r,'unexpected');rec('unexpected_source_change','FAIL',validate(r,json.loads(valid_text),base,STATE,'exact-head',unexpected,r/MANIFEST))
-  checkout(r,base);(r/'side.txt').write_text('side\n');side=commit(r,'side');t=out(r,'git','rev-parse',f'{valid}^{{tree}}');env=os.environ.copy();env.update({'GIT_AUTHOR_NAME':'D','GIT_AUTHOR_EMAIL':'d@e.invalid','GIT_COMMITTER_NAME':'D','GIT_COMMITTER_EMAIL':'d@e.invalid'});merge=subprocess.check_output(['git','commit-tree',t,'-p',valid,'-p',side,'-m','merge'],cwd=r,text=True,env=env).strip();checkout(r,merge);(r/MANIFEST).write_text(valid_text,newline='\n');rec('true_two_parent_merge_ref','PASS',validate(r,json.loads(valid_text),base,STATE,'merge-ref',valid,r/MANIFEST));checkout(r,valid);rec('merge_ref_on_exact_head','FAIL',validate(r,json.loads(valid_text),base,STATE,'merge-ref',valid,r/MANIFEST))
-  summary={'schema':'CF004_PUBLIC_WINDOWS_MATRIX_V2','test_count':len(results),'pass_count':sum(x['ok'] for x in results),'all_expected':all(x['ok'] for x in results),'results':results};print(json.dumps(summary,indent=2));raise SystemExit(0 if summary['all_expected'] else 1)
-if __name__=='__main__':main()
+
+import copy
+import json
+from dataclasses import replace
+
+from manifest_ci_candidate import CONTROLLED_PATHS, Facts, validate
+
+STATE = "R1_SECURITY_COMBINED_FINAL_TARGET_MANIFEST_CONTROL"
+
+
+def main() -> None:
+    paths = (
+        ".github/workflows/ci.yml",
+        "README.md",
+        "docs/remediation/evidence.md",
+        "requirements/runtime.lock",
+        "scripts/generate_source_manifest.py",
+        "src/pkg/app.py",
+        "tests/test_app.py",
+    )
+    payload = {
+        "schema_version": 6,
+        "state": STATE,
+        "source_commit": "1" * 40,
+        "source_git_tree": "2" * 40,
+        "source_base_commit": "0" * 40,
+        "control_commit": "3" * 40,
+        "control_git_tree": "4" * 40,
+        "controlled_paths": list(sorted(CONTROLLED_PATHS)),
+        "path_inventory": [
+            {"directory": ".github/workflows", "entries": ["ci.yml"]},
+            {"directory": "", "entries": ["README.md"]},
+            {"directory": "docs/remediation", "entries": ["evidence.md"]},
+            {"directory": "requirements", "entries": ["runtime.lock"]},
+            {"directory": "scripts", "entries": ["generate_source_manifest.py"]},
+            {"directory": "src/pkg", "entries": ["app.py"]},
+            {"directory": "tests", "entries": ["test_app.py"]},
+        ],
+        "summary": {
+            "total_file_count": 7,
+            "count_by_category": {
+                "APPLICATION_SOURCE": 1,
+                "CI_WORKFLOW": 1,
+                "CONFIGURATION": 1,
+                "DEPENDENCY_LOCK": 1,
+                "EVIDENCE": 1,
+                "TEST": 1,
+                "VALIDATION_SCRIPT": 1,
+            },
+            "excluded_entry_count": 1,
+        },
+    }
+    facts = Facts(
+        base_commit="0" * 40,
+        source_commit="1" * 40,
+        source_tree="2" * 40,
+        source_paths=paths,
+        base_is_ancestor=True,
+        control_commit="3" * 40,
+        control_tree="4" * 40,
+        control_parent="1" * 40,
+        control_changed_paths=tuple(sorted(CONTROLLED_PATHS)),
+        head_commit="5" * 40,
+        head_tree="6" * 40,
+        head_parent="3" * 40,
+        head_changed_paths=("IMPLEMENTATION_SOURCE_MANIFEST.json",),
+        manifest_bytes_match=True,
+        checkout_commit="5" * 40,
+        checkout_parents=("3" * 40,),
+    )
+
+    results: list[dict[str, object]] = []
+
+    def record(name: str, expected: str, manifest=payload, observed=facts, context="exact-head") -> None:
+        errors = validate(manifest, observed, context)
+        actual = "PASS" if not errors else "FAIL"
+        results.append(
+            {
+                "name": name,
+                "expected": expected,
+                "actual": actual,
+                "ok": actual == expected,
+                "errors": errors,
+            }
+        )
+
+    record("positive_exact_head", "PASS")
+
+    changed = copy.deepcopy(payload)
+    changed["path_inventory"][1]["entries"] = []
+    record("missing_path", "FAIL", changed)
+
+    changed = copy.deepcopy(payload)
+    changed["path_inventory"][1]["entries"].append("extra.txt")
+    record("extra_path", "FAIL", changed)
+
+    changed = copy.deepcopy(payload)
+    changed["path_inventory"][1]["entries"].append("README.md")
+    record("duplicate_path", "FAIL", changed)
+
+    changed = copy.deepcopy(payload)
+    changed["path_inventory"].reverse()
+    record("ordering", "FAIL", changed)
+
+    changed = copy.deepcopy(payload)
+    changed["summary"]["count_by_category"]["CONFIGURATION"] = 99
+    record("category", "FAIL", changed)
+
+    record("mode_mutation", "FAIL", observed=replace(facts, source_tree="7" * 40))
+    record("blob_mutation", "FAIL", observed=replace(facts, source_tree="8" * 40))
+    record("hash_mutation", "FAIL", observed=replace(facts, source_tree="9" * 40))
+    record("size_mutation", "FAIL", observed=replace(facts, source_tree="a" * 40))
+
+    changed = copy.deepcopy(payload)
+    changed["source_commit"] = "b" * 40
+    record("stale_source", "FAIL", changed)
+
+    changed = copy.deepcopy(payload)
+    changed["source_git_tree"] = "c" * 40
+    record("stale_tree", "FAIL", changed)
+
+    changed = copy.deepcopy(payload)
+    changed["state"] = "STALE"
+    record("stale_state", "FAIL", changed)
+
+    changed = copy.deepcopy(payload)
+    changed["summary"]["total_file_count"] = 99
+    record("summary", "FAIL", changed)
+
+    record(
+        "unexpected_control_path",
+        "FAIL",
+        observed=replace(
+            facts,
+            control_changed_paths=tuple(sorted(CONTROLLED_PATHS)) + ("UNAUTHORIZED.txt",),
+        ),
+    )
+    record(
+        "unexpected_manifest_path",
+        "FAIL",
+        observed=replace(
+            facts,
+            head_changed_paths=("IMPLEMENTATION_SOURCE_MANIFEST.json", "EXTRA.txt"),
+        ),
+    )
+
+    merge_facts = replace(
+        facts,
+        checkout_commit="d" * 40,
+        checkout_parents=(facts.head_commit, "e" * 40),
+    )
+    record("positive_merge_ref", "PASS", observed=merge_facts, context="merge-ref")
+    record("merge_ref_on_exact_head", "FAIL", context="merge-ref")
+
+    summary = {
+        "schema": "CF004_FINAL_TARGET_PUBLIC_WINDOWS_MATRIX_V1",
+        "test_count": len(results),
+        "pass_count": sum(bool(item["ok"]) for item in results),
+        "all_expected": all(bool(item["ok"]) for item in results),
+        "results": results,
+    }
+    print(json.dumps(summary, indent=2))
+    raise SystemExit(0 if summary["all_expected"] else 1)
+
+
+if __name__ == "__main__":
+    main()
