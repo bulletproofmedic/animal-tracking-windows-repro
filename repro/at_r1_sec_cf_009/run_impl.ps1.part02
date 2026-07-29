@@ -1,0 +1,130 @@
+    & icacls $PackageRoot /grant "*S-1-5-32-545:(OI)(CI)RX" /T /C | Out-File (Join-Path $RawRoot "package-icacls.txt")
+    if ($LASTEXITCODE -ne 0) { throw "Could not grant read/execute access to the public package." }
+
+    $PackageFiles = Get-ChildItem $PackageRoot -File -Recurse | Sort-Object FullName | ForEach-Object {
+        [ordered]@{
+            path = $_.FullName.Substring($PackageRoot.Length + 1).Replace("\","/")
+            bytes = $_.Length
+            sha256 = Get-Sha256 $_.FullName
+        }
+    }
+    $PackageIdentity = [ordered]@{
+        package_root = $PackageRoot
+        package_file_count = @($PackageFiles).Count
+        executable = [ordered]@{
+            path = $script:HelperExe
+            bytes = (Get-Item $script:HelperExe).Length
+            sha256 = Get-Sha256 $script:HelperExe
+        }
+        files = $PackageFiles
+    }
+    $PackageIdentity | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $EvidenceRoot "package-identity.json") -Encoding utf8
+
+    $Run.package = $PackageIdentity
+    $Run.host = [ordered]@{
+        computer_name = $env:COMPUTERNAME
+        os_caption = $Os.Caption
+        os_version = $Os.Version
+        os_build = $Os.BuildNumber
+        os_architecture = $Os.OSArchitecture
+        powershell = $PSVersionTable.PSVersion.ToString()
+        python = (python --version 2>&1 | Out-String).Trim()
+        runner_name = $env:RUNNER_NAME
+        runner_image = $env:ImageOS
+    }
+    $Run.filesystem = [ordered]@{
+        drive_letter = $Volume.DriveLetter
+        file_system = $Volume.FileSystem
+        file_system_label = $Volume.FileSystemLabel
+        unique_id = $Volume.UniqueId
+        size = $Volume.Size
+        size_remaining = $Volume.SizeRemaining
+    }
+    $Run.accounts = [ordered]@{
+        owner_name = $Current.Name
+        owner_sid = $Current.User.Value
+        local_system_sid = "S-1-5-18"
+    }
+
+    $TempUserName = "ATCF009_$([guid]::NewGuid().ToString('N').Substring(0,10))"
+    $PasswordPlain = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(30)) + "aA1!"
+    $PasswordSecure = ConvertTo-SecureString $PasswordPlain -AsPlainText -Force
+    $Credential = [Management.Automation.PSCredential]::new("$env:COMPUTERNAME\$TempUserName", $PasswordSecure)
+    $TempUser = New-LocalUser -Name $TempUserName -Password $PasswordSecure -AccountNeverExpires -UserMayNotChangePassword
+    $Run.accounts.unauthorized_name = $TempUserName
+    $Run.accounts.unauthorized_sid = $TempUser.SID.Value
+    $Run.accounts.unauthorized_temporary = $true
+
+    Invoke-ObservedCase "CF009-PKG-001" {
+        $Output = Join-Path $CaseRoot "CF009-PKG-001.json"
+        $Result = Invoke-Helper @("metadata","--output",$Output)
+        return [ordered]@{
+            exit_code = $Result.exit_code
+            command = $Result.command
+            artifacts = @($Output)
+        }
+    } | Out-Null
+
+    Invoke-ObservedCase "CF009-ROL-001" {
+        $Output = Join-Path $CaseRoot "CF009-ROL-001.json"
+        $Result = Invoke-Helper @("rollover","--data-root",$DataRoot,"--rollovers","11","--output",$Output)
+        return [ordered]@{
+            exit_code = $Result.exit_code
+            command = $Result.command
+            artifacts = @($Output)
+        }
+    } | Out-Null
+
+    $LogDir = Join-Path $DataRoot "logs"
+    $ActiveLog = Join-Path $LogDir "animal-tracking.log"
+
+    Invoke-ObservedCase "CF009-ACL-OWNER-001" {
+        $Output = Join-Path $CaseRoot "CF009-ACL-OWNER-001.json"
+        $Result = Invoke-Helper @("probe","--target-file",$ActiveLog,"--target-dir",$LogDir,"--expect","allow","--output",$Output)
+        return [ordered]@{
+            exit_code = $Result.exit_code
+            command = $Result.command
+            artifacts = @($Output)
+        }
+    } | Out-Null
+
+    Invoke-ObservedCase "CF009-ACL-UNAUTH-001" {
+        $Output = Join-Path $PublicTemp "CF009-ACL-UNAUTH-001.json"
+        Remove-Item $Output -Force -ErrorAction SilentlyContinue
+        $ArgumentList = @(
+            "probe",
+            "--target-file", "`"$ActiveLog`"",
+            "--target-dir", "`"$LogDir`"",
+            "--expect", "deny",
+            "--output", "`"$Output`""
+        ) -join " "
+        $Process = Start-Process $script:HelperExe -ArgumentList $ArgumentList -Credential $Credential -LoadUserProfile -Wait -PassThru -WindowStyle Hidden
+        Copy-Item $Output (Join-Path $CaseRoot "CF009-ACL-UNAUTH-001.json") -Force
+        return [ordered]@{
+            exit_code = $Process.ExitCode
+            command = "temporary-local-account packaged probe"
+            artifacts = @((Join-Path $CaseRoot "CF009-ACL-UNAUTH-001.json"))
+        }
+    } | Out-Null
+
+    Invoke-ObservedCase "CF009-ACL-SYSTEM-001" {
+        $Output = Join-Path $PublicTemp "CF009-ACL-SYSTEM-001.json"
+        Remove-Item $Output -Force -ErrorAction SilentlyContinue
+        $SystemTaskName = "ATCF009-$([guid]::NewGuid().ToString('N'))"
+        $Action = New-ScheduledTaskAction -Execute $script:HelperExe -Argument (
+            "probe --target-file `"$ActiveLog`" --target-dir `"$LogDir`" --expect allow --output `"$Output`""
+        )
+        $Trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(2))
+        $TaskPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+        Register-ScheduledTask -TaskName $SystemTaskName -Action $Action -Trigger $Trigger -Principal $TaskPrincipal | Out-Null
+        Start-ScheduledTask -TaskName $SystemTaskName
+        $Deadline = (Get-Date).AddMinutes(3)
+        while ((Get-Date) -lt $Deadline) {
+            $State = (Get-ScheduledTask -TaskName $SystemTaskName).State
+            if ((Test-Path $Output) -and $State -ne "Running") { break }
+            Start-Sleep -Milliseconds 250
+        }
+        if (-not (Test-Path $Output)) {
+            return [ordered]@{exit_code=124;command="LocalSystem scheduled task probe"}
+        }
+        $Task = Get-ScheduledTaskInfo -TaskName $SystemTaskName
