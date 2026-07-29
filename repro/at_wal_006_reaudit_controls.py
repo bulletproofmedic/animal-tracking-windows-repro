@@ -73,7 +73,9 @@ def accepted_matching(
     return tuple(sorted(rows, key=lambda row: row.observation_id))
 
 
-def selected_events(events: Sequence[Event], statuses: Sequence[str]) -> tuple[Event, ...]:
+def selected_events(
+    events: Sequence[Event], statuses: Sequence[str]
+) -> tuple[Event, ...]:
     normalized = frozenset(normalize_statuses(statuses))
     return tuple(row for row in events if row.status in normalized)
 
@@ -85,7 +87,9 @@ def enforce_bounds(events: Sequence[Event], observation_count: int) -> None:
         raise PopulationLimitExceeded("accepted observation population exceeds bound")
 
 
-def bound_snapshot(before: SourceSnapshot | None, after: SourceSnapshot | None) -> SourceSnapshot:
+def bound_snapshot(
+    before: SourceSnapshot | None, after: SourceSnapshot | None
+) -> SourceSnapshot:
     if before is None or after is None:
         raise SourceStateChanged("an exact current SourceState is required")
     if before != after:
@@ -117,7 +121,10 @@ def report_input_sha256(
         "schema_version": "1.1.0",
         "statuses": sorted(normalize_statuses(statuses)),
         "snapshot": asdict(snapshot),
-        "events": [canonical_event(event) for event in sorted(selected, key=lambda row: row.event_id)],
+        "events": [
+            canonical_event(event)
+            for event in sorted(selected, key=lambda row: row.event_id)
+        ],
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
