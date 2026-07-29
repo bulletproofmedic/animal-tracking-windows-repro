@@ -37,6 +37,12 @@ jobs:
         with:
           python-version: "3.13.14"
 
+      - name: Install pinned Windows timezone data
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m pip install --disable-pip-version-check --no-deps "tzdata==2026.3"
+
       - name: Test public payload guard
         shell: pwsh
         run: |
@@ -54,6 +60,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           python --version
+          python -c "import importlib.metadata; print('tzdata ' + importlib.metadata.version('tzdata'))"
           git --version
           $os = Get-CimInstance Win32_OperatingSystem
           [PSCustomObject]@{
