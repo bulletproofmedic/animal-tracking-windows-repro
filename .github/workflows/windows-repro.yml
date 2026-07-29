@@ -79,8 +79,14 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
-          & "repro/run.ps1"
-          $runExitCode = $LASTEXITCODE
+          $runExitCode = 0
+          try {
+            & "repro/run.ps1"
+            $runExitCode = $LASTEXITCODE
+          } catch {
+            $runExitCode = 1
+            Write-Error "Diagnostic terminated after preserving evidence: $($_.Exception.Message)"
+          }
 
           $evidenceRoot = "artifacts/at-r1-sec-cf-009"
           $runRecord = Join-Path $evidenceRoot "evidence/acceptance-run.json"
