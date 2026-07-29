@@ -1,0 +1,160 @@
+    rules = @($rules | ForEach-Object {
+        [PSCustomObject]@{
+            sid = $_.IdentityReference.Value
+            rights = $_.FileSystemRights.ToString()
+            type = $_.AccessControlType.ToString()
+            inherited = $_.IsInherited
+            inheritance = $_.InheritanceFlags.ToString()
+            propagation = $_.PropagationFlags.ToString()
+        }
+    })
+} | ConvertTo-Json -Compress -Depth 5
+"""
+
+
+def apply_windows_acl(path: Path, *, directory: bool) -> dict[str, Any]:
+    fault = os.environ.get("AT_PUBLIC_ACL_FAULT", "").strip().casefold()
+    logging_target = path.name == "animal-tracking.log"
+    bundle_target = path.suffix.casefold() == ".zip"
+    inject_apply = fault == "apply" or (
+        fault == "logging-apply" and logging_target
+    ) or (
+        fault == "bundle-apply" and bundle_target
+    )
+    inject_verify = fault == "verify" or (
+        fault == "logging-verify" and logging_target
+    ) or (
+        fault == "bundle-verify" and bundle_target
+    )
+    if inject_apply:
+        raise PermissionError("Injected ACL establishment failure.")
+    completed = run_powershell(ACL_SCRIPT, path=path, directory=directory)
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise PermissionError(f"ACL establishment or verification failed: {detail}")
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise PermissionError("ACL verification returned invalid evidence.") from error
+    if inject_verify:
+        raise PermissionError("Injected ACL verification failure.")
+    return payload
+
+
+def capture_acl(path: Path, *, directory: bool) -> dict[str, Any]:
+    completed = run_powershell(CAPTURE_ACL_SCRIPT, path=path, directory=directory)
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise PermissionError(f"ACL capture failed: {detail}")
+    return json.loads(completed.stdout)
+
+
+def protect_directory(path: Path) -> dict[str, Any]:
+    path.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink() or not path.is_dir():
+        raise PermissionError(f"Not a regular directory: {path}")
+    if os.name != "nt":
+        raise PermissionError("This diagnostic requires Windows.")
+    return apply_windows_acl(path, directory=True)
+
+
+def protect_file(path: Path) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        raise PermissionError(f"Not a regular file: {path}")
+    if os.name != "nt":
+        raise PermissionError("This diagnostic requires Windows.")
+    return apply_windows_acl(path, directory=False)
+
+
+class ProtectedRotatingFileHandler(RotatingFileHandler):
+    def _open(self):  # type: ignore[no-untyped-def]
+        stream = super()._open()
+        try:
+            protect_file(Path(self.baseFilename))
+        except Exception:
+            stream.close()
+            raise
+        return stream
+
+    def doRollover(self) -> None:
+        super().doRollover()
+        protect_file(Path(self.baseFilename))
+        for index in range(1, self.backupCount + 1):
+            archived = Path(f"{self.baseFilename}.{index}")
+            if archived.exists():
+                protect_file(archived)
+
+
+def file_observation(path: Path, *, kind: str) -> dict[str, Any]:
+    return {
+        "path": str(path),
+        "kind": kind,
+        "exists": path.exists(),
+        "bytes": path.stat().st_size if path.exists() and path.is_file() else None,
+        "sha256": sha256_file(path) if path.exists() and path.is_file() else None,
+        "acl": capture_acl(path, directory=path.is_dir()) if path.exists() else None,
+    }
+
+
+def command_metadata(args: argparse.Namespace) -> int:
+    payload = {
+        "schema_version": "1.0",
+        "command": "metadata",
+        "source_target": SOURCE_TARGET,
+        "python": sys.version,
+        "executable": sys.executable,
+        "executable_sha256": sha256_file(Path(sys.executable)),
+        "os_name": os.name,
+        "timestamp": utc_now(),
+    }
+    write_json(args.output, payload)
+    return 0
+
+
+def attempt_access(target_file: Path, target_dir: Path) -> dict[str, object]:
+    operations: list[dict[str, object]] = []
+    for name, action in (
+        ("read_file", lambda: target_file.read_bytes()),
+        ("append_file", lambda: target_file.open("ab").write(b"probe\n")),
+        ("list_directory", lambda: list(target_dir.iterdir())),
+        ("create_directory_file", lambda: (target_dir / f"probe-{os.getpid()}.tmp").write_bytes(b"x")),
+    ):
+        try:
+            value = action()
+            if hasattr(value, "close"):
+                value.close()
+            operations.append({"operation": name, "allowed": True, "error": None})
+        except Exception as error:
+            operations.append(
+                {
+                    "operation": name,
+                    "allowed": False,
+                    "error": {
+                        "type": type(error).__name__,
+                        "message": str(error),
+                    },
+                }
+            )
+    return {"operations": operations}
+
+
+def command_probe(args: argparse.Namespace) -> int:
+    observation = attempt_access(args.target_file, args.target_dir)
+    allowed_count = sum(1 for item in observation["operations"] if item["allowed"])
+    expectation_met = allowed_count == len(observation["operations"]) if args.expect == "allow" else allowed_count == 0
+    payload = {
+        "schema_version": "1.0",
+        "command": "probe",
+        "expect": args.expect,
+        "expectation_met": expectation_met,
+        "identity": os.environ.get("USERNAME"),
+        "target_file": str(args.target_file),
+        "target_dir": str(args.target_dir),
+        "observation": observation,
+        "timestamp": utc_now(),
+    }
+    write_json(args.output, payload)
+    return 0 if expectation_met else 21
+
+
+def command_rollover(args: argparse.Namespace) -> int:
