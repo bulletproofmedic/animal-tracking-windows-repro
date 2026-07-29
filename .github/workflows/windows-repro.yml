@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: public-at-r1-sec-cf-004-${{ github.ref }}
+  group: public-at-r1-sec-cf-004-final-target-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - name: Validate sanitized CF-004 payload on Windows
+      - name: Validate sanitized CF-004 final-target payload on Windows
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -40,7 +40,7 @@ jobs:
 
           python --version
           git --version
-          git clone --no-tags --single-branch --branch diag/at-r1-sec-cf-004-manifest-ci `
+          git clone --no-tags --single-branch --branch diag/at-r1-sec-cf-004-final-target-b37caf `
             "https://github.com/$env:GITHUB_REPOSITORY.git" public-repro
           git -C public-repro checkout $payloadSha
           Push-Location public-repro
@@ -54,6 +54,9 @@ jobs:
               BuildNumber = $os.BuildNumber
               Architecture = $os.OSArchitecture
               PayloadSha = $payloadSha
+              PrivateTarget = "b37caf381a127af49d3b1b7b1f4999451318b63e"
+              PrivateTargetTree = "373c5fffd4e74f9bf2138c300e022f99e775f500"
+              PrivateManifestHead = "7dba55413b9f6f66ad15b4a0ab6ed56e456c5090"
             } | Format-List
             & "repro/run.ps1"
           }
