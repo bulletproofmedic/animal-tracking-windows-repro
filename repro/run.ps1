@@ -57,24 +57,29 @@ Get-ChildItem $SourceRoot -Filter "run_impl.ps1.part*" -File |
     Set-Content $RunImplementation -Encoding utf8 -NoNewline
 
 $RunText = Get-Content $RunImplementation -Raw -Encoding utf8
+$UnsafeCommandStatement = 'if ($Result.command) { $Case.commands += [string]$Result.command }'
+$UnsafeArtifactsStatement = 'if ($Result.artifacts) { $Case.artifacts = $Result.artifacts }'
+$UnsafeObservationStatement = 'if ($Result.observation) { $Case.observation = $Result.observation }'
 $RunText = $RunText.Replace(
-    'if ($Result.command) { $Case.commands += [string]$Result.command }',
+    $UnsafeCommandStatement,
     'if ($Result.Contains("command") -and $Result["command"]) { $Case.commands += [string]$Result["command"] }'
 )
 $RunText = $RunText.Replace(
-    'if ($Result.artifacts) { $Case.artifacts = $Result.artifacts }',
+    $UnsafeArtifactsStatement,
     'if ($Result.Contains("artifacts") -and $Result["artifacts"]) { $Case.artifacts = $Result["artifacts"] }'
 )
 $RunText = $RunText.Replace(
-    'if ($Result.observation) { $Case.observation = $Result.observation }',
+    $UnsafeObservationStatement,
     'if ($Result.Contains("observation") -and $Result["observation"]) { $Case.observation = $Result["observation"] }'
 )
 $RunText = $RunText.Replace(
     'public_commit = "$env:GITHUB_SHA"',
     'public_commit = "$env:AT_PUBLIC_COMMIT"'
 )
-if ($RunText.Contains('$Result.observation') -or $RunText.Contains('$Result.command') -or $RunText.Contains('$Result.artifacts')) {
-    throw "StrictMode-safe result collector patch was incomplete."
+foreach ($UnsafeStatement in @($UnsafeCommandStatement, $UnsafeArtifactsStatement, $UnsafeObservationStatement)) {
+    if ($RunText.Contains($UnsafeStatement)) {
+        throw "StrictMode-safe result collector patch was incomplete."
+    }
 }
 $RunText | Set-Content $RunImplementation -Encoding utf8 -NoNewline
 
