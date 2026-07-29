@@ -16,7 +16,7 @@ class ReauditControlRegistryTests(unittest.TestCase):
         )
         self.assertEqual(
             PRIVATE_SUCCESSOR,
-            "ffe1e2b426d40ad7bd212684b326d6758004adaf",
+            "264cc30b30520960d107dbaa4c50219a7c80bda5",
         )
 
 
