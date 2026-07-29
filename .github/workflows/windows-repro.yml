@@ -2,8 +2,6 @@ name: Public Windows Reproducer
 
 on:
   workflow_dispatch:
-  push:
-  pull_request:
 
 permissions:
   contents: read
