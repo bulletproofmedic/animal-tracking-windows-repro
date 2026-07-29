@@ -22,17 +22,19 @@ jobs:
         shell: pwsh
         env:
           CHECKOUT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          CHECKOUT_REF: ${{ github.event.pull_request.head.ref || github.ref_name }}
         run: |
           $ErrorActionPreference = "Stop"
           git init .
           git remote add origin "https://github.com/$env:GITHUB_REPOSITORY.git"
-          git fetch --no-tags --prune origin "+refs/heads/*:refs/remotes/origin/*"
+          git fetch --no-tags --prune origin "+refs/heads/$env:CHECKOUT_REF`:refs/remotes/origin/$env:CHECKOUT_REF"
           git checkout --detach $env:CHECKOUT_SHA
           $actual = (git rev-parse HEAD).Trim()
           if ($actual -ne $env:CHECKOUT_SHA) {
             throw "Checkout identity mismatch: expected $env:CHECKOUT_SHA, got $actual"
           }
           Write-Host "Checked out sanitized public commit $actual"
+          Write-Host "Fetched complete ancestry only for branch $env:CHECKOUT_REF"
 
       - name: Select hosted Python 3.13
         shell: pwsh
