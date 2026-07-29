@@ -9,9 +9,11 @@ ROOT = Path(__file__).resolve().parents[1]
 DELTA_FILES = (
     "repro/f008_target/journal_json.py",
     "repro/f008_target/source_extracts.py",
+    "repro/f008_target/additional_entrypoints.py",
     "repro/f008_target/SOURCE_SNAPSHOT.json",
     "repro/run.ps1",
     "tests/test_f008_revalidation.py",
+    "tests/test_f008_additional_entrypoints.py",
     "tests/test_f008_payload_delta.py",
 )
 
