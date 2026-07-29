@@ -88,7 +88,7 @@ jobs:
             Write-Error "Diagnostic terminated after preserving evidence: $($_.Exception.Message)"
           }
 
-          $evidenceRoot = "artifacts/at-r1-sec-cf-009"
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "artifacts/at-r1-sec-cf-009"
           $runRecord = Join-Path $evidenceRoot "evidence/acceptance-run.json"
           $checksums = Join-Path $evidenceRoot "EVIDENCE_SHA256SUMS.txt"
 
@@ -97,7 +97,7 @@ jobs:
             Get-Content $runRecord -Raw -Encoding utf8
             Write-Host "===== END ACCEPTANCE RUN RECORD ====="
           } else {
-            Write-Error "Acceptance run record was not produced."
+            Write-Error "Acceptance run record was not produced at $runRecord."
             if ($runExitCode -eq 0) { $runExitCode = 90 }
           }
 
