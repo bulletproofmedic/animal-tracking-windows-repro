@@ -54,9 +54,12 @@ jobs:
               BuildNumber = $os.BuildNumber
               Architecture = $os.OSArchitecture
               PayloadSha = $payloadSha
-              PrivateTarget = "b37caf381a127af49d3b1b7b1f4999451318b63e"
-              PrivateTargetTree = "373c5fffd4e74f9bf2138c300e022f99e775f500"
-              PrivateManifestHead = "7dba55413b9f6f66ad15b4a0ab6ed56e456c5090"
+              PrivateSourceTarget = "b37caf381a127af49d3b1b7b1f4999451318b63e"
+              PrivateSourceTree = "373c5fffd4e74f9bf2138c300e022f99e775f500"
+              PrivateControlCommit = "ab845555dcec21e1565bb429a4022dc7e39281b6"
+              PrivateControlTree = "5faa59bc93016b2ab493b4ebb5e8c138c5251a87"
+              PrivateManifestHead = "c7d79248dd14d1d2c40b32320e617fd04af8190e"
+              PrivateManifestTree = "758673c420dcea8c46175d5cbddd4867bf0f4d22"
             } | Format-List
             & "repro/run.ps1"
           }
