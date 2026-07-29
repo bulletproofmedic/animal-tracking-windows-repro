@@ -22,6 +22,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           $event = Get-Content $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json
           if ($null -ne $event.pull_request) {
             $payloadSha = $event.pull_request.head.sha
@@ -39,7 +40,8 @@ jobs:
           python --version
           git --version
 
-          git clone --no-tags "https://github.com/$env:GITHUB_REPOSITORY.git" public-repro
+          git clone --no-tags --single-branch --branch repro/at-wal-003-pr47 `
+            "https://github.com/$env:GITHUB_REPOSITORY.git" public-repro
           git -C public-repro checkout $payloadSha
           Push-Location public-repro
           try {
