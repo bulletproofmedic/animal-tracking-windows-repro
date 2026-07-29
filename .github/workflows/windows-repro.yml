@@ -3,17 +3,7 @@ name: Public Windows Reproducer
 on:
   workflow_dispatch:
   push:
-    branches: [main]
-    paths:
-      - ".github/workflows/windows-repro.yml"
-      - "README.md"
-      - ".gitignore"
-      - "SECURITY.md"
-      - "scripts/**"
-      - "repro/**"
-      - "tests/**"
-      - "requirements/**"
-      - "pyproject.toml"
+  pull_request:
 
 permissions:
   contents: read
@@ -25,7 +15,7 @@ concurrency:
 jobs:
   validate:
     runs-on: windows-2025
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Check out sanitized reproducer
@@ -68,8 +58,13 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          if (Test-Path "repro/run.ps1") {
-            & "repro/run.ps1"
-          } else {
-            Write-Host "No reproducer is staged. Windows runner smoke test passed."
-          }
+          & "repro/run.ps1"
+
+      - name: Upload bounded diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: at-r1-sec-cf-009-public-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/at-r1-sec-cf-009
+          if-no-files-found: error
+          retention-days: 14
