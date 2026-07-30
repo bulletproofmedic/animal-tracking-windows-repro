@@ -9,6 +9,7 @@ from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterator
+from uuid import uuid4
 
 
 class ControlError(RuntimeError):
@@ -119,6 +120,20 @@ def _metadata(path: Path) -> os.stat_result:
     return value
 
 
+def _file_metadata(path: Path) -> os.stat_result:
+    try:
+        value = os.lstat(path)
+    except OSError as exc:
+        raise ControlError("sentinel unavailable") from exc
+    attrs = int(getattr(value, "st_file_attributes", 0))
+    reparse = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    if stat.S_ISLNK(value.st_mode) or attrs & reparse:
+        raise ControlError("sentinel is a link or reparse path")
+    if not stat.S_ISREG(value.st_mode):
+        raise ControlError("sentinel is not a regular file")
+    return value
+
+
 def _handle_details(handle: int) -> tuple[int, int, int]:
     kernel32: Any = ctypes.WinDLL("kernel32", use_last_error=True)
     function: Any = kernel32.GetFileInformationByHandle
@@ -143,6 +158,79 @@ def _handle_details(handle: int) -> tuple[int, int, int]:
 def _close_handle(handle: int) -> None:
     kernel32: Any = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CloseHandle(ctypes.c_void_p(handle))
+
+
+class EphemeralSentinel:
+    """Hold a delete-blocking file open for one directory-operation lifetime."""
+
+    def __init__(self, directory: Path) -> None:
+        if os.name != "nt":
+            raise ControlError("ephemeral sentinel diagnostic requires Windows")
+        self.path: Path | None = None
+        self.handle: int | None = None
+        self.device = 0
+        self.inode = 0
+        self.volume = 0
+        self.index = 0
+        kernel32: Any = ctypes.WinDLL("kernel32", use_last_error=True)
+        create_file: Any = kernel32.CreateFileW
+        create_file.argtypes = [
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+        ]
+        create_file.restype = ctypes.c_void_p
+        invalid = ctypes.c_void_p(-1).value
+        for _attempt in range(8):
+            path = directory / f".animal-tracking-pin-{uuid4().hex}.tmp"
+            raw = create_file(
+                str(path),
+                0x80000000 | 0x40000000 | 0x00010000,
+                0x00000001 | 0x00000002,
+                None,
+                1,
+                0x00000002 | 0x00000100 | 0x00200000 | 0x04000000,
+                None,
+            )
+            handle = int(raw or 0)
+            if handle and handle != invalid:
+                self.path = path
+                self.handle = handle
+                try:
+                    value = _file_metadata(path)
+                    self.device = int(value.st_dev)
+                    self.inode = int(value.st_ino)
+                    self.volume, self.index, _ = _handle_details(handle)
+                    self.verify()
+                    return
+                except BaseException:
+                    self.close()
+                    raise
+            error = ctypes.get_last_error()
+            if error not in {80, 183}:
+                raise ControlError("ephemeral sentinel creation failed") from OSError(
+                    error, os.strerror(error)
+                )
+        raise ControlError("ephemeral sentinel name collisions")
+
+    def verify(self) -> None:
+        if self.path is None or self.handle is None:
+            raise ControlError("ephemeral sentinel is closed")
+        value = _file_metadata(self.path)
+        if (int(value.st_dev), int(value.st_ino)) != (self.device, self.inode):
+            raise ControlError("ephemeral sentinel pathname changed")
+        volume, index, _ = _handle_details(self.handle)
+        if (volume, index) != (self.volume, self.index):
+            raise ControlError("ephemeral sentinel handle changed")
+
+    def close(self) -> None:
+        handle, self.handle = self.handle, None
+        if handle is not None:
+            _close_handle(handle)
 
 
 def _status_error(status: int) -> OSError:
@@ -358,6 +446,7 @@ class Pin:
         self.inode = int(value.st_ino)
         self.handle: int | None = None
         self.fd: int | None = None
+        self.sentinel: EphemeralSentinel | None = None
         volume = 0
         index = 0
         if os.name == "nt":
@@ -409,6 +498,7 @@ class Pin:
         instance.inode = int(value.st_ino)
         instance.handle = handle
         instance.fd = None
+        instance.sentinel = None
         volume, index, _ = _handle_details(handle)
         instance.identity = DirectoryIdentity(
             instance.device,
@@ -428,6 +518,7 @@ class Pin:
         instance.inode = int(value.st_ino)
         instance.handle = None
         instance.fd = fd
+        instance.sentinel = None
         instance.identity = DirectoryIdentity(instance.device, instance.inode, 0, 0)
         instance.verify()
         return instance
@@ -450,6 +541,14 @@ class Pin:
                 self.inode,
             ):
                 raise ControlError("directory descriptor changed")
+        if self.sentinel is not None:
+            self.sentinel.verify()
+
+    def protect_namespace(self) -> None:
+        self.verify()
+        if os.name == "nt" and self.sentinel is None:
+            self.sentinel = EphemeralSentinel(self.path)
+        self.verify()
 
     def child(
         self,
@@ -495,6 +594,12 @@ class Pin:
                 os.close(fd)
                 raise
         self.verify()
+        try:
+            if create:
+                child.protect_namespace()
+        except BaseException:
+            child.close()
+            raise
         return child
 
     def replace_empty_staging_child(self, name: str) -> Pin:
@@ -604,6 +709,9 @@ class Pin:
         self.verify()
 
     def close(self) -> None:
+        if self.sentinel is not None:
+            self.sentinel.close()
+            self.sentinel = None
         if self.fd is not None:
             os.close(self.fd)
             self.fd = None
@@ -644,6 +752,7 @@ def pin_chain(path: Path, *, expected: DirectoryIdentity | None = None) -> Itera
             if index == len(parts) - 1 and expected is not None:
                 if child.identity != expected:
                     raise ControlError("recorded directory identity changed")
+        pins[-1].protect_namespace()
         chain = Chain(tuple(pins))
         chain.verify()
         yield chain

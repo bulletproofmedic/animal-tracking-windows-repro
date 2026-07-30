@@ -185,17 +185,21 @@ class PathIdentityControls(unittest.TestCase):
             )
             self.assertEqual(destination.read_bytes(), payload)
 
-    def test_restore_all_member_classes_resist_post_check_parent_swap(self) -> None:
-        for relative in (
-            "data/database.bin",
-            "media/item.bin",
-            "maps/source/item.bin",
-            "contributors/nested/item.bin",
+    def test_restore_all_member_classes_resist_both_publication_swaps(self) -> None:
+        for boundary in (
+            "after_temporary_parent_identity_check",
+            "after_final_parent_identity_check",
         ):
-            with self.subTest(relative=relative):
-                self._restore_swap_case(relative)
+            for relative in (
+                "data/database.bin",
+                "media/item.bin",
+                "maps/source/item.bin",
+                "contributors/nested/item.bin",
+            ):
+                with self.subTest(boundary=boundary, relative=relative):
+                    self._restore_swap_case(relative, boundary)
 
-    def _restore_swap_case(self, relative: str) -> None:
+    def _restore_swap_case(self, relative: str, expected_boundary: str) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             staged = root / "staged"
@@ -205,7 +209,7 @@ class PathIdentityControls(unittest.TestCase):
             state = {"attempted": False}
 
             def probe(boundary: str, path: Path) -> None:
-                if boundary != "after_final_parent_identity_check":
+                if boundary != expected_boundary:
                     return
                 if state["attempted"]:
                     return
@@ -232,6 +236,46 @@ class PathIdentityControls(unittest.TestCase):
                 self.assertIsNotNone(target)
                 assert target is not None
                 self.assertEqual(target.read_bytes(), b"synthetic")
+
+    @unittest.skipUnless(os.name == "nt", "Windows namespace sentinel test")
+    def test_ephemeral_sentinel_blocks_selected_directory_rename_and_cleans_up(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            selected = root / "selected"
+            external = root / "external"
+            selected.mkdir()
+            external.mkdir()
+            sentinel: Path | None = None
+            with model.pin_chain(selected) as chain:
+                self.assertIsNotNone(chain.final.sentinel)
+                assert chain.final.sentinel is not None
+                sentinel = chain.final.sentinel.path
+                self.assertIsNotNone(sentinel)
+                assert sentinel is not None
+                self.assertTrue(sentinel.is_file())
+                swapped, _parked = attempt_swap(selected, external)
+                self.assertFalse(swapped)
+                chain.verify()
+            assert sentinel is not None
+            self.assertFalse(sentinel.exists())
+            self.assertEqual(list(external.iterdir()), [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows ancestor pin test")
+    def test_ancestor_directory_rename_is_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ancestor = root / "ancestor"
+            selected = ancestor / "selected"
+            external = root / "external"
+            selected.mkdir(parents=True)
+            external.mkdir()
+            with model.pin_chain(selected) as chain:
+                swapped, _parked = attempt_swap(ancestor, external)
+                self.assertFalse(swapped)
+                chain.verify()
+            self.assertEqual(list(external.iterdir()), [])
 
     @unittest.skipUnless(os.name == "nt", "Windows ACL test")
     def test_staging_root_dacl_is_protected(self) -> None:
@@ -264,6 +308,19 @@ class PathIdentityControls(unittest.TestCase):
             with self.assertRaises((ControlError, OSError)):
                 model.publish_payload(selected, destination.name, b"new")
             self.assertEqual(destination.read_bytes(), b"existing")
+
+    def test_existing_temporary_file_is_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            selected = root / "selected"
+            selected.mkdir()
+            destination = selected / "result.bin"
+            temporary = selected / "result.bin.part"
+            temporary.write_bytes(b"unrelated-existing-bytes")
+            with self.assertRaises((ControlError, OSError)):
+                model.publish_payload(selected, destination.name, b"new")
+            self.assertEqual(temporary.read_bytes(), b"unrelated-existing-bytes")
+            self.assertFalse(destination.exists())
 
 
 if __name__ == "__main__":
