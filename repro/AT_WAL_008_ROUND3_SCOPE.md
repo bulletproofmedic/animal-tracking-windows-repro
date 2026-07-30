@@ -2,10 +2,10 @@
 
 This diagnostic models the three producer-owned residual controls returned by the independent successor re-audit.
 
-Private candidate identity at dispatch:
+Final private candidate identity at dispatch:
 
 - branch context: `fix/at-wal-008-core-remediation`;
-- commit: `d423d8049dfad75a269bf652866c4ff03fcd3fc0`;
+- commit: `18d23ea8d623ae9f9ad579e296d93fe307317367`;
 - public evidence authority: synthetic producer diagnostic only.
 
 The payload proves these correction classes without copying private source:
