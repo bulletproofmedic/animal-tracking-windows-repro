@@ -5,6 +5,7 @@ import unittest
 from typing import Any, Callable
 
 ArchiveHook = Callable[[dict[str, object]], None]
+ResolverHook = Callable[[dict[str, object]], tuple[str, str, str]]
 
 
 def _original_archive(journal: dict[str, object]) -> None:
@@ -29,6 +30,8 @@ class HookModel:
         self.publication = types.SimpleNamespace(archive_journal=_original_archive)
         self.lineage = types.SimpleNamespace(resolve_source_manifest=_original_resolver)
         self.original_archive: ArchiveHook | None = None
+        self.approved_archive: ArchiveHook = self.composed_archive
+        self.approved_resolver: ResolverHook = self.resolve_source_manifest
         self.readback_installed = False
         self.identity_installed = False
 
@@ -50,7 +53,7 @@ class HookModel:
 
     def install_readback(self) -> None:
         current: Any = self.publication.archive_journal
-        if current is self.composed_archive:
+        if current is self.approved_archive:
             self.readback_installed = True
             return
         if self.readback_installed:
@@ -58,21 +61,21 @@ class HookModel:
         if current.__module__ != "synthetic.backup_publication":
             raise RuntimeError("Another component already owns backup history.")
         self.original_archive = current
-        self.publication.archive_journal = self.composed_archive
+        self.publication.archive_journal = self.approved_archive
         self.readback_installed = True
 
     def install_identity(self) -> None:
-        if self.publication.archive_journal is not self.composed_archive:
+        if self.publication.archive_journal is not self.approved_archive:
             raise RuntimeError("History is not owned by the approved composed pipeline.")
         current: Any = self.lineage.resolve_source_manifest
-        if current is self.resolve_source_manifest:
+        if current is self.approved_resolver:
             self.identity_installed = True
             return
         if self.identity_installed:
             raise RuntimeError("Identity resolver ownership changed unexpectedly.")
         if current.__module__ != "synthetic.restore_lineage_manifest":
             raise RuntimeError("Another component already owns identity resolution.")
-        self.lineage.resolve_source_manifest = self.resolve_source_manifest
+        self.lineage.resolve_source_manifest = self.approved_resolver
         self.identity_installed = True
 
     def resolve_source_manifest(self, journal: dict[str, object]) -> tuple[str, str, str]:
@@ -89,8 +92,8 @@ class HookCompositionTests(unittest.TestCase):
         model = HookModel()
         model.app_ready()
         model.app_ready()
-        self.assertIs(model.publication.archive_journal, model.composed_archive)
-        self.assertIs(model.lineage.resolve_source_manifest, model.resolve_source_manifest)
+        self.assertIs(model.publication.archive_journal, model.approved_archive)
+        self.assertIs(model.lineage.resolve_source_manifest, model.approved_resolver)
 
     def test_composed_history_executes_both_controls_in_order(self) -> None:
         model = HookModel()
