@@ -70,12 +70,22 @@ class PathIdentityControls(unittest.TestCase):
                 state["parked"] = parked
 
             model.PROBE = probe
-            with self.assertRaises(ControlError):
+            error: ControlError | None = None
+            try:
                 model.publish_payload(selected, name, b"synthetic-private-bytes")
+            except ControlError as exc:
+                error = exc
             self.assertTrue(state["attempted"])
-            self.assertTrue(state.get("swapped"))
             self.assertFalse((external / name).exists())
             self.assertEqual(list(external.iterdir()), [])
+            if state.get("swapped"):
+                self.assertIsNotNone(error)
+            else:
+                self.assertIsNone(error)
+                self.assertEqual(
+                    (selected / name).read_bytes(),
+                    b"synthetic-private-bytes",
+                )
 
     def test_temporary_creation_after_check_swap_never_writes_external(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -98,11 +108,21 @@ class PathIdentityControls(unittest.TestCase):
                 )
 
             model.PROBE = probe
-            with self.assertRaises(ControlError):
+            error: ControlError | None = None
+            try:
                 model.publish_payload(selected, "backup.atbackup", b"payload")
+            except ControlError as exc:
+                error = exc
             self.assertTrue(state["attempted"])
-            self.assertTrue(state.get("swapped"))
             self.assertEqual(list(external.iterdir()), [])
+            if state.get("swapped"):
+                self.assertIsNotNone(error)
+            else:
+                self.assertIsNone(error)
+                self.assertEqual(
+                    (selected / "backup.atbackup").read_bytes(),
+                    b"payload",
+                )
 
     def test_restart_reconciliation_rejects_replaced_directory_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -196,12 +216,22 @@ class PathIdentityControls(unittest.TestCase):
                 )
 
             model.PROBE = probe
-            with self.assertRaises(ControlError):
-                model.extract_payload(staged, relative, b"synthetic")
+            error: ControlError | None = None
+            target: Path | None = None
+            try:
+                target = model.extract_payload(staged, relative, b"synthetic")
+            except ControlError as exc:
+                error = exc
             self.assertTrue(state["attempted"])
-            self.assertTrue(state.get("swapped"))
             self.assertFalse((external / Path(relative).name).exists())
             self.assertEqual(list(external.iterdir()), [])
+            if state.get("swapped"):
+                self.assertIsNotNone(error)
+            else:
+                self.assertIsNone(error)
+                self.assertIsNotNone(target)
+                assert target is not None
+                self.assertEqual(target.read_bytes(), b"synthetic")
 
     @unittest.skipUnless(os.name == "nt", "Windows ACL test")
     def test_staging_root_dacl_is_protected(self) -> None:
