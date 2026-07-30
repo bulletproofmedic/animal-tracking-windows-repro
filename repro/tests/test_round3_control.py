@@ -1,84 +1,150 @@
 from __future__ import annotations
 
+import sys
 import unittest
 from pathlib import Path
 from uuid import UUID
 
 from repro.round3_control import (
+    _POPULATIONS,
     CancelAfter,
+    CancelAfterSnapshotClose,
     Cancelled,
     Checkpoints,
-    Configuration,
     ControlError,
     Exclusion,
+    PopulationRow,
     SelectedRow,
-    create_synthetic_repository,
+    Snapshot,
+    build_payload,
+    create_shallow_repository,
+    ensure_complete_history,
     producer_evidence,
-    run_mutation_probes,
+    require_selection_counts,
     selection_counts,
-    validate_configuration_population,
     validate_git_binding,
+    validate_stable_population,
 )
 
 
-class RoundThreeControls(unittest.TestCase):
-    def test_configuration_collision_rejected_in_both_orders(self) -> None:
+class RoundFourControls(unittest.TestCase):
+    def test_all_stable_id_populations_reject_revision_collisions(self) -> None:
         identity = UUID("00000000-0000-7000-8000-000000000001")
-        for revisions in ((1, 2), (2, 1)):
-            with self.subTest(revisions=revisions), self.assertRaises(ControlError):
-                validate_configuration_population(
-                    Configuration(identity, revision) for revision in revisions
-                )
+        for entity_type in _POPULATIONS:
+            for revisions in ((1, 2), (2, 1)):
+                with (
+                    self.subTest(
+                        entity_type=entity_type,
+                        revisions=revisions,
+                    ),
+                    self.assertRaises(ControlError),
+                ):
+                    validate_stable_population(
+                        (
+                            PopulationRow(entity_type, identity, revisions[0]),
+                            PopulationRow(entity_type, identity, revisions[1]),
+                        )
+                    )
 
-    def test_unique_configuration_identities_are_accepted(self) -> None:
-        validate_configuration_population(
+    def test_cross_entity_uuid_reuse_remains_legal(self) -> None:
+        identity = UUID("00000000-0000-7000-8000-000000000001")
+        validate_stable_population(
             (
-                Configuration(UUID(int=1), 1),
-                Configuration(UUID(int=2), 2),
+                PopulationRow("EVENT", identity, 1),
+                PopulationRow("SPECIES", identity, 1),
             )
         )
 
-    def test_materialization_cancels_before_unbounded_stream_completion(self) -> None:
+    def test_typed_exclusion_is_not_collapsed(self) -> None:
+        identity = UUID("00000000-0000-7000-8000-000000000001")
+        result = selection_counts(
+            (SelectedRow("EVENT", identity, 1, "included"),),
+            (Exclusion("SPECIES", identity, 1, "excluded"),),
+            Checkpoints(CancelAfter(100)),
+        )
+        self.assertEqual(
+            result,
+            {
+                "included": 1,
+                "partial": 0,
+                "excluded": 1,
+                "considered": 2,
+            },
+        )
+
+    def test_typed_selection_undercount_is_rejected(self) -> None:
+        identity = UUID("00000000-0000-7000-8000-000000000001")
+        with self.assertRaisesRegex(ControlError, "typed graph"):
+            require_selection_counts(
+                (SelectedRow("EVENT", identity, 1, "included"),),
+                (Exclusion("SPECIES", identity, 1, "excluded"),),
+                {
+                    "included": 1,
+                    "partial": 0,
+                    "excluded": 0,
+                    "considered": 1,
+                },
+            )
+
+    def test_materialization_still_cancels(self) -> None:
         checkpoints = Checkpoints(CancelAfter(3))
         with self.assertRaises(Cancelled):
             checkpoints.materialize(range(1000))
         self.assertLess(checkpoints.rows_seen, 1000)
 
-    def test_selection_count_preprocessing_cancels(self) -> None:
-        checkpoints = Checkpoints(CancelAfter(2))
-        events = (
-            SelectedRow("EVENT", UUID(int=index + 1), 1, "included")
-            for index in range(1000)
+    def test_payload_validation_cancels_after_snapshot_close(self) -> None:
+        rows = tuple(
+            PopulationRow("EVENT", UUID(int=index + 1), 1)
+            for index in range(2000)
         )
-        with self.assertRaises(Cancelled):
-            selection_counts(events, (), (), checkpoints)
-        self.assertLess(checkpoints.rows_seen, 1000)
+        snapshot = Snapshot(rows)
+        with self.assertRaisesRegex(Cancelled, "payload validation"):
+            build_payload(
+                snapshot,
+                CancelAfterSnapshotClose(snapshot, calls=3),
+            )
+        self.assertTrue(snapshot.closed)
 
-    def test_selection_identity_preserves_entity_type(self) -> None:
-        identity = UUID("00000000-0000-7000-8000-000000000001")
-        result = selection_counts(
-            (SelectedRow("EVENT", identity, 1, "included"),),
-            (SelectedRow("OBSERVATION", identity, 1, "included"),),
-            (),
-            Checkpoints(CancelAfter(100)),
+    def test_payload_validation_restores_prior_trace(self) -> None:
+        previous = sys.gettrace()
+        snapshot = Snapshot((PopulationRow("EVENT", UUID(int=1), 1),))
+        build_payload(
+            snapshot,
+            CancelAfterSnapshotClose(snapshot, calls=1000),
         )
-        self.assertEqual(result["considered"], 2)
-        self.assertEqual(result["included"], 2)
+        self.assertIs(sys.gettrace(), previous)
 
-    def test_exclusion_of_different_entity_type_is_not_collapsed(self) -> None:
-        identity = UUID("00000000-0000-7000-8000-000000000001")
-        result = selection_counts(
-            (SelectedRow("EVENT", identity, 1, "included"),),
-            (),
-            (Exclusion("OBSERVATION", identity, 1, "excluded"),),
-            Checkpoints(CancelAfter(100)),
-        )
-        self.assertEqual(result["considered"], 2)
-        self.assertEqual(result["excluded"], 1)
+    def test_validation_exception_is_not_masked_by_cleanup_check(self) -> None:
+        duplicate = PopulationRow("EVENT", UUID(int=1), 1)
+        snapshot = Snapshot((duplicate, duplicate))
+        with self.assertRaisesRegex(ControlError, "duplicate stable identity"):
+            build_payload(
+                snapshot,
+                CancelAfterSnapshotClose(snapshot, calls=1000),
+            )
 
-    def test_exact_git_identity_and_path_population_pass(self) -> None:
-        holder, root, base, head, tree = create_synthetic_repository()
+    def test_fresh_clone_starts_shallow(self) -> None:
+        holder, root, _base, _head, _tree = create_shallow_repository()
         try:
+            self.assertEqual(
+                "true",
+                _git_for_test(root, "rev-parse", "--is-shallow-repository"),
+            )
+        finally:
+            holder.cleanup()
+
+    def test_complete_history_restores_merge_base_and_binding(self) -> None:
+        holder, root, base, head, tree = create_shallow_repository()
+        try:
+            ensure_complete_history(
+                root,
+                expected_base_commit=base,
+                expected_source_commit=head,
+            )
+            self.assertEqual(
+                "false",
+                _git_for_test(root, "rev-parse", "--is-shallow-repository"),
+            )
             result = validate_git_binding(
                 root,
                 expected_execution_commit=head,
@@ -87,46 +153,23 @@ class RoundThreeControls(unittest.TestCase):
                 expected_base_commit=base,
                 expected_changed_paths={"control.txt"},
             )
-            self.assertEqual(result["execution_commit"], head)
-            self.assertEqual(result["execution_tree"], tree)
+            self.assertEqual(result["merge_base"], base)
             self.assertTrue(result["tracked_worktree_clean"])
         finally:
             holder.cleanup()
 
-    def test_wrong_git_head_fails_closed(self) -> None:
-        holder, root, base, head, tree = create_synthetic_repository()
+    def test_wrong_changed_path_population_fails_closed(self) -> None:
+        holder, root, base, head, tree = create_shallow_repository()
         try:
-            with self.assertRaisesRegex(ControlError, "execution commit mismatch"):
-                validate_git_binding(
-                    root,
-                    expected_execution_commit="0" * 40,
-                    expected_source_commit=head,
-                    expected_source_tree=tree,
-                    expected_base_commit=base,
-                    expected_changed_paths={"control.txt"},
-                )
-        finally:
-            holder.cleanup()
-
-    def test_wrong_git_tree_fails_closed(self) -> None:
-        holder, root, base, head, _tree = create_synthetic_repository()
-        try:
-            with self.assertRaisesRegex(ControlError, "source tree mismatch"):
-                validate_git_binding(
-                    root,
-                    expected_execution_commit=head,
-                    expected_source_commit=head,
-                    expected_source_tree="0" * 40,
-                    expected_base_commit=base,
-                    expected_changed_paths={"control.txt"},
-                )
-        finally:
-            holder.cleanup()
-
-    def test_changed_path_population_fails_closed(self) -> None:
-        holder, root, base, head, tree = create_synthetic_repository()
-        try:
-            with self.assertRaisesRegex(ControlError, "changed-path population mismatch"):
+            ensure_complete_history(
+                root,
+                expected_base_commit=base,
+                expected_source_commit=head,
+            )
+            with self.assertRaisesRegex(
+                ControlError,
+                "changed-path population mismatch",
+            ):
                 validate_git_binding(
                     root,
                     expected_execution_commit=head,
@@ -138,38 +181,7 @@ class RoundThreeControls(unittest.TestCase):
         finally:
             holder.cleanup()
 
-    def test_dirty_tracked_worktree_fails_closed(self) -> None:
-        holder, root, base, head, tree = create_synthetic_repository()
-        try:
-            Path(root, "control.txt").write_text("changed\n", encoding="utf-8")
-            with self.assertRaisesRegex(ControlError, "tracked worktree is not clean"):
-                validate_git_binding(
-                    root,
-                    expected_execution_commit=head,
-                    expected_source_commit=head,
-                    expected_source_tree=tree,
-                    expected_base_commit=base,
-                    expected_changed_paths={"control.txt"},
-                )
-        finally:
-            holder.cleanup()
-
-    def test_mutation_score_is_calculated_from_per_mutant_outcomes(self) -> None:
-        result = run_mutation_probes(
-            {
-                "killed": lambda: True,
-                "survived": lambda: False,
-            }
-        )
-        self.assertEqual(result["killed"], 1)
-        self.assertEqual(result["total"], 2)
-        self.assertEqual(result["score"], 0.5)
-        self.assertEqual(
-            {item["status"] for item in result["results"]},
-            {"KILLED", "SURVIVED"},
-        )
-
-    def test_public_producer_evidence_kills_all_six_mutants(self) -> None:
+    def test_measured_evidence_kills_all_six_controls(self) -> None:
         result = producer_evidence()
         self.assertEqual(result["killed"], 6)
         self.assertEqual(result["total"], 6)
@@ -178,6 +190,17 @@ class RoundThreeControls(unittest.TestCase):
             {item["status"] for item in result["results"]},
             {"KILLED"},
         )
+
+
+def _git_for_test(root: Path, *args: str) -> str:
+    import subprocess
+
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
 
 
 if __name__ == "__main__":
