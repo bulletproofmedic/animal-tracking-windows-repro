@@ -8,9 +8,7 @@ from dataclasses import asdict, dataclass
 from typing import Callable, Iterable, Sequence
 
 from at_wal_006_reaudit_controls import (
-    ACCEPTED,
     Event,
-    Observation,
     SourceSnapshot,
     accepted_matching,
     bound_snapshot,
