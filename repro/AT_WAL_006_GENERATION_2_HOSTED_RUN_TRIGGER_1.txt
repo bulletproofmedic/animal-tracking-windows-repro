@@ -1,0 +1,3 @@
+AT-WAL-006 generation 2 hosted Windows validation trigger 1.
+Synthetic diagnostic metadata only.
+No private repository history, source, data, configuration, credentials, coordinates, or media.
