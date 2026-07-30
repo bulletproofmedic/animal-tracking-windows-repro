@@ -29,7 +29,7 @@ def _validate_directory(path: Path) -> None:
         raise AuthorityError("not a directory")
 
 
-def _open_without_delete_sharing(path: Path) -> int:
+def _open_without_delete_sharing(path: Path, *, directory: bool) -> int:
     kernel32: Any = ctypes.WinDLL("kernel32", use_last_error=True)
     create_file: Any = kernel32.CreateFileW
     create_file.argtypes = [
@@ -42,13 +42,15 @@ def _open_without_delete_sharing(path: Path) -> int:
         ctypes.c_void_p,
     ]
     create_file.restype = ctypes.c_void_p
+    desired_access = 0x80 if directory else 0x80000000
+    flags = 0x00200000 | (0x02000000 if directory else 0)
     handle = create_file(
         str(path),
-        0x80,
+        desired_access,
         0x1 | 0x2,
         None,
         3,
-        0x02000000 | 0x00200000,
+        flags,
         None,
     )
     value = int(handle or 0)
@@ -78,14 +80,30 @@ class WindowsAuthorityTests(unittest.TestCase):
         if os.name != "nt":
             self.skipTest("Windows-specific authority semantics")
 
-    def test_pinned_directory_cannot_be_renamed_or_replaced(self) -> None:
+    def test_directory_handle_alone_does_not_pin_namespace_name(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             parent = Path(temporary)
             root = parent / ".active.recovery"
             displaced = parent / ".active.recovery.displaced"
             root.mkdir()
-            _validate_directory(root)
-            handle = _open_without_delete_sharing(root)
+            handle = _open_without_delete_sharing(root, directory=True)
+            try:
+                root.rename(displaced)
+                self.assertFalse(root.exists())
+                self.assertTrue(displaced.is_dir())
+            finally:
+                _close(handle)
+            displaced.rename(root)
+
+    def test_sentinel_file_handle_blocks_authority_root_rename(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            root = parent / ".active.recovery"
+            displaced = parent / ".active.recovery.displaced"
+            root.mkdir()
+            sentinel = root / ".authority.pin"
+            sentinel.write_bytes(b"1")
+            handle = _open_without_delete_sharing(sentinel, directory=False)
             try:
                 with self.assertRaises(OSError):
                     root.rename(displaced)
