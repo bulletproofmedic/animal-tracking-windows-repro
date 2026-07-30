@@ -2,15 +2,28 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tempfile
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from types import FrameType
 from typing import TypeVar
 from uuid import UUID
 
 _CHECKPOINT_INTERVAL = 64
+_VALIDATION_TRACE_INTERVAL = 32
 _T = TypeVar("_T")
+_POPULATIONS = (
+    "EVENT",
+    "OBSERVATION",
+    "SITE",
+    "DEVICE",
+    "DEPLOYMENT",
+    "SPECIES",
+    "CONFIGURATION_INTERVAL",
+)
 
 
 class ControlError(ValueError):
@@ -56,7 +69,8 @@ class Checkpoints:
 
 
 @dataclass(frozen=True)
-class Configuration:
+class PopulationRow:
+    entity_type: str
     stable_id: UUID
     revision: int
 
@@ -77,29 +91,25 @@ class Exclusion:
     disposition: str
 
 
-def validate_configuration_population(rows: Iterable[Configuration]) -> None:
-    identities: set[UUID] = set()
+def validate_stable_population(rows: Iterable[PopulationRow]) -> None:
+    seen: set[UUID] = set()
     for row in rows:
-        if row.stable_id in identities:
-            raise ControlError("configuration stable identities must be unique across revisions")
-        identities.add(row.stable_id)
+        if row.stable_id in seen:
+            raise ControlError(
+                f"{row.entity_type} stable identities must be unique across revisions"
+            )
+        seen.add(row.stable_id)
 
 
 def selection_counts(
-    events: Iterable[SelectedRow],
-    observations: Iterable[SelectedRow],
+    selected: Iterable[SelectedRow],
     exclusions: Iterable[Exclusion],
     checkpoints: Checkpoints,
 ) -> dict[str, int]:
     represented: set[tuple[str, UUID, int]] = set()
     counts = {"included": 0, "partial": 0, "excluded": 0}
-
     checkpoints.check()
-    for row in checkpoints.rows(events):
-        represented.add((row.entity_type, row.stable_id, row.revision))
-        counts[row.disposition] += 1
-    checkpoints.check()
-    for row in checkpoints.rows(observations):
+    for row in checkpoints.rows(selected):
         represented.add((row.entity_type, row.stable_id, row.revision))
         counts[row.disposition] += 1
     checkpoints.check()
@@ -110,6 +120,105 @@ def selection_counts(
     checkpoints.check()
     counts["considered"] = sum(counts.values())
     return counts
+
+
+def require_selection_counts(
+    selected: Iterable[SelectedRow],
+    exclusions: Iterable[Exclusion],
+    supplied: Mapping[str, int],
+) -> None:
+    expected = selection_counts(
+        selected,
+        exclusions,
+        Checkpoints(CancelAfter(1000)),
+    )
+    if dict(supplied) != expected:
+        raise ControlError("selection counts do not reconcile to the typed graph")
+
+
+class _ValidationTrace:
+    def __init__(self, checkpoints: Checkpoints) -> None:
+        self.checkpoints = checkpoints
+        self.remaining = _VALIDATION_TRACE_INTERVAL
+
+    def __call__(
+        self,
+        frame: FrameType,
+        event: str,
+        arg: object,
+    ) -> _ValidationTrace:
+        del frame, arg
+        if event == "line":
+            self.remaining -= 1
+            if self.remaining == 0:
+                self.checkpoints.check()
+                self.remaining = _VALIDATION_TRACE_INTERVAL
+        return self
+
+
+@contextmanager
+def bounded_validation(checkpoints: Checkpoints) -> Iterator[None]:
+    previous = sys.gettrace()
+    checkpoints.check()
+    sys.settrace(_ValidationTrace(checkpoints))
+    try:
+        yield
+    finally:
+        sys.settrace(previous)
+
+
+def validate_payload(rows: Iterable[PopulationRow]) -> None:
+    populations: dict[str, set[UUID]] = {
+        entity_type: set() for entity_type in _POPULATIONS
+    }
+    for row in rows:
+        if row.entity_type not in populations:
+            raise ControlError("undeclared population")
+        if row.stable_id in populations[row.entity_type]:
+            raise ControlError("duplicate stable identity")
+        populations[row.entity_type].add(row.stable_id)
+    ordered = sorted(
+        (entity_type, str(identity))
+        for entity_type, identities in populations.items()
+        for identity in identities
+    )
+    if len(ordered) != sum(len(identities) for identities in populations.values()):
+        raise ControlError("payload population mismatch")
+
+
+class Snapshot:
+    def __init__(self, rows: Iterable[PopulationRow]) -> None:
+        self.rows = tuple(rows)
+        self.closed = False
+
+    def __enter__(self) -> Snapshot:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.closed = True
+
+
+class CancelAfterSnapshotClose:
+    def __init__(self, snapshot: Snapshot, calls: int) -> None:
+        self.snapshot = snapshot
+        self.remaining = calls
+
+    def raise_if_cancelled(self) -> None:
+        if not self.snapshot.closed:
+            return
+        self.remaining -= 1
+        if self.remaining <= 0:
+            raise Cancelled("cancelled during payload validation")
+
+
+def build_payload(snapshot: Snapshot, token: object) -> tuple[PopulationRow, ...]:
+    checkpoints = Checkpoints(token)
+    with snapshot:
+        rows = checkpoints.materialize(snapshot.rows)
+    with bounded_validation(checkpoints):
+        validate_payload(rows)
+    checkpoints.check()
+    return rows
 
 
 def _git(root: Path, *args: str) -> str:
@@ -149,7 +258,6 @@ def validate_git_binding(
         ).splitlines()
         if line
     }
-
     if execution_commit != expected_execution_commit:
         raise ControlError("execution commit mismatch")
     if execution_tree != expected_source_tree or source_tree != expected_source_tree:
@@ -160,7 +268,6 @@ def validate_git_binding(
         raise ControlError("tracked worktree is not clean")
     if changed_paths != expected_changed_paths:
         raise ControlError("changed-path population mismatch")
-
     return {
         "execution_commit": execution_commit,
         "execution_tree": execution_tree,
@@ -172,25 +279,63 @@ def validate_git_binding(
     }
 
 
-def create_synthetic_repository() -> tuple[tempfile.TemporaryDirectory[str], Path, str, str, str]:
+def create_shallow_repository() -> tuple[
+    tempfile.TemporaryDirectory[str],
+    Path,
+    str,
+    str,
+    str,
+]:
     holder = tempfile.TemporaryDirectory()
     root = Path(holder.name)
-    _git(root, "init")
-    _git(root, "config", "user.email", "synthetic@example.invalid")
-    _git(root, "config", "user.name", "Synthetic Control")
-    (root / "base.txt").write_text("base\n", encoding="utf-8")
-    _git(root, "add", "base.txt")
-    _git(root, "commit", "-m", "base")
-    base = _git(root, "rev-parse", "HEAD")
-    (root / "control.txt").write_text("controlled\n", encoding="utf-8")
-    _git(root, "add", "control.txt")
-    _git(root, "commit", "-m", "target")
-    head = _git(root, "rev-parse", "HEAD")
-    tree = _git(root, "rev-parse", "HEAD^{tree}")
-    return holder, root, base, head, tree
+    source = root / "source"
+    remote = root / "remote.git"
+    checkout = root / "checkout"
+    source.mkdir()
+    _git(source, "init", "-b", "main")
+    _git(source, "config", "user.email", "synthetic@example.invalid")
+    _git(source, "config", "user.name", "Synthetic Control")
+    (source / "base.txt").write_text("base\n", encoding="utf-8")
+    _git(source, "add", "base.txt")
+    _git(source, "commit", "-m", "base")
+    base = _git(source, "rev-parse", "HEAD")
+    (source / "control.txt").write_text("controlled\n", encoding="utf-8")
+    _git(source, "add", "control.txt")
+    _git(source, "commit", "-m", "target")
+    head = _git(source, "rev-parse", "HEAD")
+    tree = _git(source, "rev-parse", "HEAD^{tree}")
+    subprocess.run(
+        ["git", "clone", "--bare", str(source), str(remote)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "clone", "--depth=1", remote.as_uri(), str(checkout)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return holder, checkout, base, head, tree
 
 
-def run_mutation_probes(probes: Mapping[str, Callable[[], bool]]) -> dict[str, object]:
+def ensure_complete_history(
+    root: Path,
+    *,
+    expected_base_commit: str,
+    expected_source_commit: str,
+) -> None:
+    if _git(root, "rev-parse", "--is-shallow-repository") == "true":
+        _git(root, "fetch", "--no-tags", "--unshallow", "origin")
+    else:
+        _git(root, "fetch", "--no-tags", "origin")
+    for commit in (expected_base_commit, expected_source_commit):
+        _git(root, "cat-file", "-e", f"{commit}^{{commit}}")
+
+
+def run_mutation_probes(
+    probes: Mapping[str, Callable[[], bool]],
+) -> dict[str, object]:
     results = []
     for mutation_id, probe in sorted(probes.items()):
         killed = bool(probe())
@@ -220,56 +365,108 @@ def _raises(exception_type: type[BaseException], callback: Callable[[], object])
 def producer_evidence() -> dict[str, object]:
     shared = UUID("00000000-0000-7000-8000-000000000001")
 
-    def collision(order: tuple[int, int]) -> bool:
-        rows = tuple(Configuration(shared, revision) for revision in order)
-        return _raises(ControlError, lambda: validate_configuration_population(rows))
+    def all_population_collisions() -> bool:
+        for entity_type in _POPULATIONS:
+            for revisions in ((1, 2), (2, 1)):
+                rows = (
+                    PopulationRow(entity_type, shared, revisions[0]),
+                    PopulationRow(entity_type, shared, revisions[1]),
+                )
+                if not _raises(
+                    ControlError,
+                    lambda rows=rows: validate_stable_population(rows),
+                ):
+                    return False
+        return True
 
-    def stream_cancel() -> bool:
-        checkpoints = Checkpoints(CancelAfter(3))
-        return _raises(Cancelled, lambda: checkpoints.materialize(range(1000)))
-
-    def counts_cancel() -> bool:
-        checkpoints = Checkpoints(CancelAfter(2))
-        rows = (
-            SelectedRow("EVENT", UUID(int=index + 1), 1, "included")
-            for index in range(1000)
+    def typed_exclusion() -> bool:
+        selected = (SelectedRow("EVENT", shared, 1, "included"),)
+        exclusions = (Exclusion("SPECIES", shared, 1, "excluded"),)
+        result = selection_counts(
+            selected,
+            exclusions,
+            Checkpoints(CancelAfter(100)),
         )
-        return _raises(Cancelled, lambda: selection_counts(rows, (), (), checkpoints))
+        return result == {
+            "included": 1,
+            "partial": 0,
+            "excluded": 1,
+            "considered": 2,
+        }
 
-    def typed_identity() -> bool:
-        checkpoints = Checkpoints(CancelAfter(100))
-        event = SelectedRow("EVENT", shared, 1, "included")
-        observation = SelectedRow("OBSERVATION", shared, 1, "included")
-        return selection_counts((event,), (observation,), (), checkpoints)["considered"] == 2
+    def undercount_rejected() -> bool:
+        return _raises(
+            ControlError,
+            lambda: require_selection_counts(
+                (SelectedRow("EVENT", shared, 1, "included"),),
+                (Exclusion("SPECIES", shared, 1, "excluded"),),
+                {
+                    "included": 1,
+                    "partial": 0,
+                    "excluded": 0,
+                    "considered": 1,
+                },
+            ),
+        )
 
-    holder, root, base, head, tree = create_synthetic_repository()
-    try:
-        def wrong_head() -> bool:
-            return _raises(
-                ControlError,
-                lambda: validate_git_binding(
-                    root,
-                    expected_execution_commit="0" * 40,
-                    expected_source_commit=head,
-                    expected_source_tree=tree,
-                    expected_base_commit=base,
-                    expected_changed_paths={"control.txt"},
-                ),
+    def validation_cancel() -> bool:
+        rows = tuple(
+            PopulationRow("EVENT", UUID(int=index + 1), 1)
+            for index in range(2000)
+        )
+        snapshot = Snapshot(rows)
+        return _raises(
+            Cancelled,
+            lambda: build_payload(
+                snapshot,
+                CancelAfterSnapshotClose(snapshot, calls=3),
+            ),
+        )
+
+    def validation_exception_preserved() -> bool:
+        duplicate = PopulationRow("EVENT", shared, 1)
+        snapshot = Snapshot((duplicate, duplicate))
+        try:
+            build_payload(snapshot, CancelAfterSnapshotClose(snapshot, calls=1000))
+        except ControlError as error:
+            return str(error) == "duplicate stable identity"
+        return False
+
+    def shallow_history_repaired() -> bool:
+        holder, root, base, head, tree = create_shallow_repository()
+        try:
+            if _git(root, "rev-parse", "--is-shallow-repository") != "true":
+                return False
+            ensure_complete_history(
+                root,
+                expected_base_commit=base,
+                expected_source_commit=head,
             )
+            result = validate_git_binding(
+                root,
+                expected_execution_commit=head,
+                expected_source_commit=head,
+                expected_source_tree=tree,
+                expected_base_commit=base,
+                expected_changed_paths={"control.txt"},
+            )
+            return (
+                result["merge_base"] == base
+                and _git(root, "rev-parse", "--is-shallow-repository") == "false"
+            )
+        finally:
+            holder.cleanup()
 
-        evidence = run_mutation_probes(
-            {
-                "configuration_collision_forward": lambda: collision((1, 2)),
-                "configuration_collision_reverse": lambda: collision((2, 1)),
-                "builder_stream_cancellation": stream_cancel,
-                "selection_count_cancellation": counts_cancel,
-                "selection_identity_entity_type": typed_identity,
-                "validator_wrong_head": wrong_head,
-            }
-        )
-    finally:
-        holder.cleanup()
-    return evidence
+    return run_mutation_probes(
+        {
+            "all_population_stable_id_collisions": all_population_collisions,
+            "typed_cross_entity_exclusion": typed_exclusion,
+            "typed_selection_undercount": undercount_rejected,
+            "payload_validation_cancellation": validation_cancel,
+            "validation_exception_preservation": validation_exception_preserved,
+            "shallow_history_acquisition": shallow_history_repaired,
+        }
+    )
 
 
 if __name__ == "__main__":
