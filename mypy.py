@@ -24,8 +24,10 @@ def _patch_exact_candidate() -> None:
     text = path.read_text(encoding="utf-8")
     if _OLD not in text:
         raise RuntimeError("Expected pre-correction candidate line was not found.")
-    path.write_text(text.replace(_OLD, _NEW, 1), encoding="utf-8")
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    corrected = text.replace(_OLD, _NEW, 1)
+    path.write_text(corrected, encoding="utf-8")
+    normalized = path.read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8")
+    digest = hashlib.sha256(normalized).hexdigest()
     if digest != _EXPECTED_SHA256:
         raise RuntimeError(f"Corrected ACL candidate identity mismatch: {digest}")
 
