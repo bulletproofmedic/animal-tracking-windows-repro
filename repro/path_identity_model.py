@@ -284,7 +284,7 @@ def _rename_open_file(file_handle: int, parent_handle: int, name: str) -> None:
     _validate_name(name)
     file_name_type = ctypes.c_wchar * len(name)
 
-    class _FileRenameInfo(ctypes.Structure):
+    class _FileRenameInformation(ctypes.Structure):
         _fields_ = [
             ("ReplaceIfExists", ctypes.c_bool),
             ("RootDirectory", ctypes.c_void_p),
@@ -292,31 +292,34 @@ def _rename_open_file(file_handle: int, parent_handle: int, name: str) -> None:
             ("FileName", file_name_type),
         ]
 
-    information = _FileRenameInfo(
+    information = _FileRenameInformation(
         False,
         ctypes.c_void_p(parent_handle),
         len(name.encode("utf-16-le")),
         name,
     )
-    kernel32: Any = ctypes.WinDLL("kernel32", use_last_error=True)
-    function: Any = kernel32.SetFileInformationByHandle
+    io_status = _IoStatusBlock()
+    ntdll: Any = ctypes.WinDLL("ntdll")
+    function: Any = ntdll.NtSetInformationFile
     function.argtypes = [
         ctypes.c_void_p,
-        ctypes.c_int,
+        ctypes.POINTER(_IoStatusBlock),
         ctypes.c_void_p,
         ctypes.c_uint32,
+        ctypes.c_int,
     ]
-    function.restype = ctypes.c_int
-    if not function(
-        ctypes.c_void_p(file_handle),
-        3,
-        ctypes.byref(information),
-        ctypes.sizeof(information),
-    ):
-        error = ctypes.get_last_error()
-        raise ControlError("relative rename failed") from OSError(
-            error, os.strerror(error)
+    function.restype = ctypes.c_long
+    status = int(
+        function(
+            ctypes.c_void_p(file_handle),
+            ctypes.byref(io_status),
+            ctypes.byref(information),
+            ctypes.sizeof(information),
+            10,  # FileRenameInformation
         )
+    )
+    if status < 0:
+        raise ControlError("relative rename failed") from _status_error(status)
 
 
 def _delete_open(file_handle: int) -> None:
