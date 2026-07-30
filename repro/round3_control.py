@@ -1,19 +1,16 @@
 from __future__ import annotations
 
+import heapq
 import json
 import subprocess
-import sys
 import tempfile
-from collections.abc import Callable, Iterable, Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from types import FrameType
 from typing import TypeVar
 from uuid import UUID
 
 _CHECKPOINT_INTERVAL = 64
-_VALIDATION_TRACE_INTERVAL = 32
 _T = TypeVar("_T")
 _POPULATIONS = (
     "EVENT",
@@ -66,6 +63,25 @@ class Checkpoints:
         result = tuple(self.rows(values))
         self.check()
         return result
+
+    def sorted_values(
+        self,
+        values: Iterable[_T],
+        *,
+        key: Callable[[_T], object],
+    ) -> tuple[_T, ...]:
+        chunks: list[tuple[_T, ...]] = []
+        chunk: list[_T] = []
+        for value in self.rows(values):
+            chunk.append(value)
+            if len(chunk) == _CHECKPOINT_INTERVAL:
+                chunks.append(tuple(sorted(chunk, key=key)))
+                chunk.clear()
+                self.check()
+        if chunk:
+            chunks.append(tuple(sorted(chunk, key=key)))
+            self.check()
+        return () if not chunks else tuple(self.rows(heapq.merge(*chunks, key=key)))
 
 
 @dataclass(frozen=True)
@@ -136,54 +152,33 @@ def require_selection_counts(
         raise ControlError("selection counts do not reconcile to the typed graph")
 
 
-class _ValidationTrace:
-    def __init__(self, checkpoints: Checkpoints) -> None:
-        self.checkpoints = checkpoints
-        self.remaining = _VALIDATION_TRACE_INTERVAL
-
-    def __call__(
-        self,
-        frame: FrameType,
-        event: str,
-        arg: object,
-    ) -> _ValidationTrace:
-        del frame, arg
-        if event == "line":
-            self.remaining -= 1
-            if self.remaining == 0:
-                self.checkpoints.check()
-                self.remaining = _VALIDATION_TRACE_INTERVAL
-        return self
-
-
-@contextmanager
-def bounded_validation(checkpoints: Checkpoints) -> Iterator[None]:
-    previous = sys.gettrace()
-    checkpoints.check()
-    sys.settrace(_ValidationTrace(checkpoints))
-    try:
-        yield
-    finally:
-        sys.settrace(previous)
-
-
-def validate_payload(rows: Iterable[PopulationRow]) -> None:
+def validate_payload(
+    rows: Iterable[PopulationRow],
+    checkpoints: Checkpoints,
+) -> tuple[PopulationRow, ...]:
     populations: dict[str, set[UUID]] = {
         entity_type: set() for entity_type in _POPULATIONS
     }
-    for row in rows:
+    checkpoints.check()
+    for row in checkpoints.rows(rows):
         if row.entity_type not in populations:
             raise ControlError("undeclared population")
         if row.stable_id in populations[row.entity_type]:
             raise ControlError("duplicate stable identity")
         populations[row.entity_type].add(row.stable_id)
-    ordered = sorted(
-        (entity_type, str(identity))
-        for entity_type, identities in populations.items()
-        for identity in identities
+    checkpoints.check()
+    ordered = checkpoints.sorted_values(
+        (
+            PopulationRow(entity_type, identity, 1)
+            for entity_type, identities in populations.items()
+            for identity in identities
+        ),
+        key=lambda row: (row.entity_type, str(row.stable_id), row.revision),
     )
     if len(ordered) != sum(len(identities) for identities in populations.values()):
         raise ControlError("payload population mismatch")
+    checkpoints.check()
+    return ordered
 
 
 class Snapshot:
@@ -215,10 +210,7 @@ def build_payload(snapshot: Snapshot, token: object) -> tuple[PopulationRow, ...
     checkpoints = Checkpoints(token)
     with snapshot:
         rows = checkpoints.materialize(snapshot.rows)
-    with bounded_validation(checkpoints):
-        validate_payload(rows)
-    checkpoints.check()
-    return rows
+    return validate_payload(rows, checkpoints)
 
 
 def _git(root: Path, *args: str) -> str:
