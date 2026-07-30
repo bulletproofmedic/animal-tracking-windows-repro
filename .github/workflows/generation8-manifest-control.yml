@@ -1,0 +1,30 @@
+name: Generation 8 manifest control reproducer
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generation8-control:
+    runs-on: windows-2025
+    steps:
+      - name: Check out exact diagnostic head
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.13.14"
+      - name: Record environment
+        shell: pwsh
+        run: |
+          python --version
+          git --version
+          Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsBuildNumber, OsArchitecture
+      - name: Run sanitized topology and mutation reproducer
+        run: python -m unittest -v generation8_manifest_control.test_reproducer
