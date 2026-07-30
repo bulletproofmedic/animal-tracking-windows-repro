@@ -6,8 +6,8 @@ Write-Host "scope=synthetic exact-object acknowledgement and cleanup"
 Write-Host "private_history=not_present"
 Write-Host "sensitive_data=not_present"
 
-python -m compileall -q repro/g8_handle_controls.py repro/tests/test_g8_handle_controls.py
-python -m unittest -v repro.tests.test_g8_handle_controls
+python -m compileall -q repro/g8_handle_controls.py repro/g8_rename_layout_fix.py repro/run_g8_tests.py repro/tests/test_g8_handle_controls.py
+python repro/run_g8_tests.py
 python scripts/check_public_payload.py
 git diff --check
 
