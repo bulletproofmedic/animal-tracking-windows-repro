@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import json
 import os
 import stat
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, BinaryIO, Callable, Iterator
 
 
 class ControlError(RuntimeError):
     pass
+
+
+PROBE: Callable[[str, Path], None] = lambda _boundary, _path: None
 
 
 @dataclass(frozen=True)
@@ -32,14 +36,14 @@ class DirectoryIdentity:
     @classmethod
     def from_dict(cls, value: object) -> DirectoryIdentity:
         if not isinstance(value, dict):
-            raise ControlError("identity missing")
-        result: dict[str, int] = {}
+            raise ControlError("directory identity missing")
+        fields: dict[str, int] = {}
         for key in ("device", "inode", "volume_serial", "file_index"):
             raw = value.get(key)
             if type(raw) is not int or raw < 0:
-                raise ControlError("identity malformed")
-            result[key] = raw
-        return cls(**result)
+                raise ControlError("directory identity malformed")
+            fields[key] = raw
+        return cls(**fields)
 
 
 class _ByHandleFileInformation(ctypes.Structure):
@@ -60,11 +64,48 @@ class _ByHandleFileInformation(ctypes.Structure):
     ]
 
 
+class _UnicodeString(ctypes.Structure):
+    _fields_ = [
+        ("Length", ctypes.c_ushort),
+        ("MaximumLength", ctypes.c_ushort),
+        ("Buffer", ctypes.c_wchar_p),
+    ]
+
+
+class _ObjectAttributes(ctypes.Structure):
+    _fields_ = [
+        ("Length", ctypes.c_ulong),
+        ("RootDirectory", ctypes.c_void_p),
+        ("ObjectName", ctypes.POINTER(_UnicodeString)),
+        ("Attributes", ctypes.c_ulong),
+        ("SecurityDescriptor", ctypes.c_void_p),
+        ("SecurityQualityOfService", ctypes.c_void_p),
+    ]
+
+
+class _IoStatusBlock(ctypes.Structure):
+    _fields_ = [
+        ("Status", ctypes.c_void_p),
+        ("Information", ctypes.c_size_t),
+    ]
+
+
+class _FileDispositionInfo(ctypes.Structure):
+    _fields_ = [("DeleteFile", ctypes.c_bool)]
+
+
 def absolute(path: Path) -> Path:
     return Path(os.path.abspath(path))
 
 
-def metadata(path: Path) -> os.stat_result:
+def _validate_name(name: str) -> None:
+    if not name or name in {".", ".."} or Path(name).name != name:
+        raise ControlError("invalid child name")
+    if "/" in name or "\\" in name:
+        raise ControlError("invalid child name")
+
+
+def _metadata(path: Path) -> os.stat_result:
     try:
         value = os.lstat(path)
     except OSError as exc:
@@ -78,55 +119,238 @@ def metadata(path: Path) -> os.stat_result:
     return value
 
 
-def open_windows_directory(path: Path) -> int:
-    kernel32: Any = ctypes.WinDLL("kernel32", use_last_error=True)
-    create_file: Any = kernel32.CreateFileW
-    create_file.argtypes = [
-        ctypes.c_wchar_p,
-        ctypes.c_uint32,
-        ctypes.c_uint32,
-        ctypes.c_void_p,
-        ctypes.c_uint32,
-        ctypes.c_uint32,
-        ctypes.c_void_p,
-    ]
-    create_file.restype = ctypes.c_void_p
-    handle = create_file(
-        str(path),
-        0x00000080,
-        0x00000001 | 0x00000002,
-        None,
-        3,
-        0x00200000 | 0x02000000,
-        None,
-    )
-    invalid = ctypes.c_void_p(-1).value
-    value = int(handle or 0)
-    if not value or value == invalid:
-        error = ctypes.get_last_error()
-        raise ControlError("directory handle unavailable") from OSError(
-            error, os.strerror(error)
-        )
-    return value
-
-
-def windows_identity(handle: int) -> tuple[int, int]:
+def _handle_details(handle: int) -> tuple[int, int, int]:
     kernel32: Any = ctypes.WinDLL("kernel32", use_last_error=True)
     function: Any = kernel32.GetFileInformationByHandle
     function.argtypes = [ctypes.c_void_p, ctypes.POINTER(_ByHandleFileInformation)]
     function.restype = ctypes.c_int
-    info = _ByHandleFileInformation()
-    if not function(ctypes.c_void_p(handle), ctypes.byref(info)):
+    information = _ByHandleFileInformation()
+    if not function(ctypes.c_void_p(handle), ctypes.byref(information)):
         error = ctypes.get_last_error()
-        raise ControlError("handle identity unavailable") from OSError(error, os.strerror(error))
-    index = (int(info.nFileIndexHigh) << 32) | int(info.nFileIndexLow)
-    return int(info.dwVolumeSerialNumber), index
+        raise ControlError("handle identity unavailable") from OSError(
+            error, os.strerror(error)
+        )
+    index = (int(information.nFileIndexHigh) << 32) | int(
+        information.nFileIndexLow
+    )
+    return (
+        int(information.dwVolumeSerialNumber),
+        index,
+        int(information.dwFileAttributes),
+    )
+
+
+def _close_handle(handle: int) -> None:
+    kernel32: Any = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CloseHandle(ctypes.c_void_p(handle))
+
+
+def _status_error(status: int) -> OSError:
+    ntdll: Any = ctypes.WinDLL("ntdll")
+    convert: Any = ntdll.RtlNtStatusToDosError
+    convert.argtypes = [ctypes.c_long]
+    convert.restype = ctypes.c_ulong
+    code = int(convert(ctypes.c_long(status)))
+    return OSError(code, os.strerror(code))
+
+
+@contextmanager
+def _owner_only_security_descriptor() -> Iterator[int | None]:
+    if os.name != "nt":
+        yield None
+        return
+    advapi32: Any = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32: Any = ctypes.WinDLL("kernel32", use_last_error=True)
+    convert: Any = advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+    convert.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_uint32),
+    ]
+    convert.restype = ctypes.c_int
+    descriptor = ctypes.c_void_p()
+    size = ctypes.c_uint32()
+    sddl = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)"
+    if not convert(sddl, 1, ctypes.byref(descriptor), ctypes.byref(size)):
+        error = ctypes.get_last_error()
+        raise ControlError("security descriptor unavailable") from OSError(
+            error, os.strerror(error)
+        )
+    try:
+        yield int(descriptor.value or 0)
+    finally:
+        if descriptor.value:
+            kernel32.LocalFree(ctypes.c_void_p(descriptor.value))
+
+
+def _open_relative(
+    parent_handle: int,
+    name: str,
+    *,
+    directory: bool,
+    create: bool,
+    writable: bool = False,
+    deletable: bool = False,
+    exclusive: bool = False,
+    security_descriptor: int | None = None,
+) -> int:
+    _validate_name(name)
+    buffer = ctypes.create_unicode_buffer(name)
+    byte_length = len(name.encode("utf-16-le"))
+    unicode_name = _UnicodeString(
+        byte_length,
+        byte_length + 2,
+        ctypes.cast(buffer, ctypes.c_wchar_p),
+    )
+    attributes = _ObjectAttributes(
+        ctypes.sizeof(_ObjectAttributes),
+        ctypes.c_void_p(parent_handle),
+        ctypes.pointer(unicode_name),
+        0x00000040,
+        ctypes.c_void_p(security_descriptor) if security_descriptor else None,
+        None,
+    )
+    io_status = _IoStatusBlock()
+    handle = ctypes.c_void_p()
+    ntdll: Any = ctypes.WinDLL("ntdll")
+    create_file: Any = ntdll.NtCreateFile
+    create_file.argtypes = [
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.c_uint32,
+        ctypes.POINTER(_ObjectAttributes),
+        ctypes.POINTER(_IoStatusBlock),
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+    ]
+    create_file.restype = ctypes.c_long
+    if directory:
+        access = 0x00000001 | 0x00000020 | 0x00000080 | 0x00100000
+        if deletable:
+            access |= 0x00010000
+    else:
+        access = 0x80000000 | 0x00100000
+        if writable:
+            access |= 0x40000000
+        if deletable:
+            access |= 0x00010000
+    share = 0x00000001 | 0x00000002
+    if not deletable:
+        share |= 0x00000004
+    if exclusive:
+        disposition = 2
+    elif directory and create:
+        disposition = 3
+    elif create:
+        disposition = 2
+    else:
+        disposition = 1
+    options = 0x00000020 | 0x00200000
+    options |= 0x00000001 if directory else 0x00000040
+    status = int(
+        create_file(
+            ctypes.byref(handle),
+            access,
+            ctypes.byref(attributes),
+            ctypes.byref(io_status),
+            None,
+            0x00000080,
+            share,
+            disposition,
+            options,
+            None,
+            0,
+        )
+    )
+    if status < 0 or not handle.value:
+        raise ControlError("relative open failed") from _status_error(status)
+    value = int(handle.value)
+    _, _, attrs = _handle_details(value)
+    if attrs & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+        _close_handle(value)
+        raise ControlError("reparse child")
+    if bool(attrs & 0x00000010) != directory:
+        _close_handle(value)
+        raise ControlError("wrong child type")
+    return value
+
+
+def _rename_open_file(file_handle: int, parent_handle: int, name: str) -> None:
+    _validate_name(name)
+    file_name_type = ctypes.c_wchar * len(name)
+
+    class _FileRenameInfo(ctypes.Structure):
+        _fields_ = [
+            ("ReplaceIfExists", ctypes.c_bool),
+            ("RootDirectory", ctypes.c_void_p),
+            ("FileNameLength", ctypes.c_uint32),
+            ("FileName", file_name_type),
+        ]
+
+    information = _FileRenameInfo(
+        False,
+        ctypes.c_void_p(parent_handle),
+        len(name.encode("utf-16-le")),
+        name,
+    )
+    kernel32: Any = ctypes.WinDLL("kernel32", use_last_error=True)
+    function: Any = kernel32.SetFileInformationByHandle
+    function.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+    ]
+    function.restype = ctypes.c_int
+    if not function(
+        ctypes.c_void_p(file_handle),
+        3,
+        ctypes.byref(information),
+        ctypes.sizeof(information),
+    ):
+        error = ctypes.get_last_error()
+        raise ControlError("relative rename failed") from OSError(
+            error, os.strerror(error)
+        )
+
+
+def _delete_open(file_handle: int) -> None:
+    information = _FileDispositionInfo(True)
+    kernel32: Any = ctypes.WinDLL("kernel32", use_last_error=True)
+    function: Any = kernel32.SetFileInformationByHandle
+    function.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+    ]
+    function.restype = ctypes.c_int
+    if not function(
+        ctypes.c_void_p(file_handle),
+        4,
+        ctypes.byref(information),
+        ctypes.sizeof(information),
+    ):
+        error = ctypes.get_last_error()
+        raise ControlError("handle delete failed") from OSError(
+            error, os.strerror(error)
+        )
 
 
 class Pin:
-    def __init__(self, path: Path, expected: DirectoryIdentity | None = None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        expected: DirectoryIdentity | None = None,
+    ) -> None:
         self.path = absolute(path)
-        value = metadata(self.path)
+        value = _metadata(self.path)
         self.device = int(value.st_dev)
         self.inode = int(value.st_ino)
         self.handle: int | None = None
@@ -134,10 +358,38 @@ class Pin:
         volume = 0
         index = 0
         if os.name == "nt":
-            self.handle = open_windows_directory(self.path)
-            volume, index = windows_identity(self.handle)
+            kernel32: Any = ctypes.WinDLL("kernel32", use_last_error=True)
+            create_file: Any = kernel32.CreateFileW
+            create_file.argtypes = [
+                ctypes.c_wchar_p,
+                ctypes.c_uint32,
+                ctypes.c_uint32,
+                ctypes.c_void_p,
+                ctypes.c_uint32,
+                ctypes.c_uint32,
+                ctypes.c_void_p,
+            ]
+            create_file.restype = ctypes.c_void_p
+            raw = create_file(
+                str(self.path),
+                0x00000001 | 0x00000020 | 0x00000080 | 0x00100000,
+                0x00000001 | 0x00000002,
+                None,
+                3,
+                0x00200000 | 0x02000000,
+                None,
+            )
+            invalid = ctypes.c_void_p(-1).value
+            self.handle = int(raw or 0)
+            if not self.handle or self.handle == invalid:
+                error = ctypes.get_last_error()
+                raise ControlError("directory pin failed") from OSError(
+                    error, os.strerror(error)
+                )
+            volume, index, _ = _handle_details(self.handle)
         else:
-            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
             self.fd = os.open(self.path, flags)
         self.identity = DirectoryIdentity(self.device, self.inode, volume, index)
         if expected is not None and expected != self.identity:
@@ -145,28 +397,215 @@ class Pin:
             raise ControlError("recorded directory identity changed")
         self.verify()
 
+    @classmethod
+    def from_child_handle(cls, path: Path, handle: int) -> Pin:
+        instance = cls.__new__(cls)
+        instance.path = absolute(path)
+        value = _metadata(instance.path)
+        instance.device = int(value.st_dev)
+        instance.inode = int(value.st_ino)
+        instance.handle = handle
+        instance.fd = None
+        volume, index, _ = _handle_details(handle)
+        instance.identity = DirectoryIdentity(
+            instance.device,
+            instance.inode,
+            volume,
+            index,
+        )
+        instance.verify()
+        return instance
+
+    @classmethod
+    def from_child_fd(cls, path: Path, fd: int) -> Pin:
+        instance = cls.__new__(cls)
+        instance.path = absolute(path)
+        value = os.fstat(fd)
+        instance.device = int(value.st_dev)
+        instance.inode = int(value.st_ino)
+        instance.handle = None
+        instance.fd = fd
+        instance.identity = DirectoryIdentity(instance.device, instance.inode, 0, 0)
+        instance.verify()
+        return instance
+
     def verify(self) -> None:
-        value = metadata(self.path)
+        value = _metadata(self.path)
         if int(value.st_dev) != self.device or int(value.st_ino) != self.inode:
             raise ControlError("directory pathname changed")
         if self.handle is not None:
-            if windows_identity(self.handle) != (
+            volume, index, _ = _handle_details(self.handle)
+            if (volume, index) != (
                 self.identity.volume_serial,
                 self.identity.file_index,
             ):
                 raise ControlError("directory handle changed")
         if self.fd is not None:
             value = os.fstat(self.fd)
-            if int(value.st_dev) != self.device or int(value.st_ino) != self.inode:
+            if (int(value.st_dev), int(value.st_ino)) != (
+                self.device,
+                self.inode,
+            ):
                 raise ControlError("directory descriptor changed")
+
+    def child(
+        self,
+        name: str,
+        *,
+        create: bool,
+        exclusive: bool = False,
+        secure: bool = False,
+    ) -> Pin:
+        _validate_name(name)
+        self.verify()
+        PROBE("after_child_parent_identity_check", self.path / name)
+        if os.name == "nt":
+            assert self.handle is not None
+            with _owner_only_security_descriptor() as descriptor:
+                handle = _open_relative(
+                    self.handle,
+                    name,
+                    directory=True,
+                    create=create,
+                    exclusive=exclusive,
+                    security_descriptor=descriptor if secure and create else None,
+                )
+            try:
+                child = Pin.from_child_handle(self.path / name, handle)
+            except BaseException:
+                _close_handle(handle)
+                raise
+        else:
+            assert self.fd is not None
+            if create:
+                try:
+                    os.mkdir(name, 0o700, dir_fd=self.fd)
+                except FileExistsError:
+                    if exclusive:
+                        raise ControlError("directory exists") from None
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(name, flags, dir_fd=self.fd)
+            try:
+                child = Pin.from_child_fd(self.path / name, fd)
+            except BaseException:
+                os.close(fd)
+                raise
+        self.verify()
+        return child
+
+    def replace_empty_staging_child(self, name: str) -> Pin:
+        if os.name == "nt":
+            assert self.handle is not None
+            old = _open_relative(
+                self.handle,
+                name,
+                directory=True,
+                create=False,
+                deletable=True,
+            )
+            try:
+                _delete_open(old)
+            finally:
+                _close_handle(old)
+        else:
+            assert self.fd is not None
+            os.rmdir(name, dir_fd=self.fd)
+        return self.child(name, create=True, exclusive=True, secure=True)
+
+    def open_file(
+        self,
+        name: str,
+        *,
+        create: bool,
+        mutable: bool,
+        deletable: bool,
+    ) -> BinaryIO:
+        self.verify()
+        PROBE("after_temporary_parent_identity_check", self.path / name)
+        if os.name == "nt":
+            assert self.handle is not None
+            raw = _open_relative(
+                self.handle,
+                name,
+                directory=False,
+                create=create,
+                writable=mutable,
+                deletable=deletable,
+                exclusive=create,
+            )
+            try:
+                import msvcrt
+
+                flags = os.O_BINARY | (os.O_RDWR if mutable else os.O_RDONLY)
+                fd = msvcrt.open_osfhandle(raw, flags)
+            except BaseException:
+                _close_handle(raw)
+                raise
+        else:
+            assert self.fd is not None
+            flags = os.O_RDWR if mutable else os.O_RDONLY
+            if create:
+                flags |= os.O_CREAT | os.O_EXCL
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(name, flags, 0o600, dir_fd=self.fd)
+        file = os.fdopen(fd, "r+b" if mutable else "rb")
+        try:
+            self.verify()
+        except BaseException:
+            if create:
+                with suppress(Exception):
+                    self.delete_without_verify(file, name)
+            file.close()
+            raise
+        return file
+
+    def delete_without_verify(self, file: BinaryIO, name: str) -> None:
+        if os.name == "nt":
+            import msvcrt
+
+            _delete_open(int(msvcrt.get_osfhandle(file.fileno())))
+        else:
+            assert self.fd is not None
+            os.unlink(name, dir_fd=self.fd)
+
+    def publish(self, file: BinaryIO, source_name: str, destination_name: str) -> None:
+        file.flush()
+        os.fsync(file.fileno())
+        PROBE("before_final_publication", self.path / destination_name)
+        self.verify()
+        PROBE("after_final_parent_identity_check", self.path / destination_name)
+        if os.name == "nt":
+            import msvcrt
+
+            assert self.handle is not None
+            _rename_open_file(
+                int(msvcrt.get_osfhandle(file.fileno())),
+                self.handle,
+                destination_name,
+            )
+        else:
+            assert self.fd is not None
+            os.link(
+                source_name,
+                destination_name,
+                src_dir_fd=self.fd,
+                dst_dir_fd=self.fd,
+                follow_symlinks=False,
+            )
+            os.unlink(source_name, dir_fd=self.fd)
+        file.flush()
+        os.fsync(file.fileno())
+        if self.fd is not None:
+            os.fsync(self.fd)
+        self.verify()
 
     def close(self) -> None:
         if self.fd is not None:
             os.close(self.fd)
             self.fd = None
         if self.handle is not None:
-            kernel32: Any = ctypes.WinDLL("kernel32", use_last_error=True)
-            kernel32.CloseHandle(ctypes.c_void_p(self.handle))
+            _close_handle(self.handle)
             self.handle = None
 
     def __enter__(self) -> Pin:
@@ -193,57 +632,81 @@ class Chain:
 def pin_chain(path: Path, *, expected: DirectoryIdentity | None = None) -> Iterator[Chain]:
     target = absolute(path)
     anchor = Path(target.anchor)
-    current = anchor
-    components = [anchor]
-    for part in target.parts[len(anchor.parts) :]:
-        current /= part
-        components.append(current)
+    parts = target.parts[len(anchor.parts) :]
     with ExitStack() as stack:
-        pins: list[Pin] = []
-        for position, component in enumerate(components):
-            pin = stack.enter_context(
-                Pin(component, expected if position == len(components) - 1 else None)
-            )
-            pins.append(pin)
+        pins = [stack.enter_context(Pin(anchor))]
+        for index, part in enumerate(parts):
+            child = stack.enter_context(pins[-1].child(part, create=False))
+            pins.append(child)
+            if index == len(parts) - 1 and expected is not None:
+                if child.identity != expected:
+                    raise ControlError("recorded directory identity changed")
         chain = Chain(tuple(pins))
         chain.verify()
         yield chain
         chain.verify()
 
 
-def publish_new(source: Path, destination: Path, chain: Chain) -> None:
-    chain.verify()
-    if source.parent != destination.parent or absolute(source.parent) != chain.final.path:
-        raise ControlError("publication outside pinned directory")
-    if destination.exists() or destination.is_symlink():
-        raise ControlError("destination exists")
-    if not source.is_file() or source.is_symlink():
-        raise ControlError("source is not regular")
-    with source.open("r+b") as handle:
-        os.fsync(handle.fileno())
-    chain.verify()
-    if os.name == "nt":
-        kernel32: Any = ctypes.WinDLL("kernel32", use_last_error=True)
-        move: Any = kernel32.MoveFileExW
-        move.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
-        move.restype = ctypes.c_int
-        if not move(str(source), str(destination), 0x00000008):
-            error = ctypes.get_last_error()
-            raise ControlError("publication failed") from OSError(error, os.strerror(error))
-    else:
-        os.link(source, destination)
-        source.unlink()
-    chain.verify()
-    if not destination.is_file() or destination.is_symlink():
-        raise ControlError("published object is unsafe")
+def sha256_file(file: BinaryIO) -> tuple[str, int]:
+    position = file.tell()
+    try:
+        file.seek(0)
+        digest = hashlib.sha256()
+        size = 0
+        while block := file.read(65536):
+            digest.update(block)
+            size += len(block)
+        return digest.hexdigest(), size
+    finally:
+        file.seek(position)
 
 
-def write_journal(path: Path, destination: Path, identity: DirectoryIdentity) -> None:
+def publish_payload(directory: Path, name: str, payload: bytes) -> DirectoryIdentity:
+    with pin_chain(directory) as chain:
+        selected = chain.final.identity
+        temp_name = f"{name}.part"
+        with chain.final.open_file(
+            temp_name,
+            create=True,
+            mutable=True,
+            deletable=True,
+        ) as file:
+            published = False
+            try:
+                file.write(payload)
+                temporary = chain.final.identity
+                if temporary != selected:
+                    raise ControlError("identity changed before temporary creation")
+                chain.final.publish(file, temp_name, name)
+                published = True
+                final = chain.final.identity
+                if final != selected:
+                    raise ControlError("identity changed at final publication")
+            except BaseException:
+                if not published:
+                    with suppress(Exception):
+                        chain.final.delete_without_verify(file, temp_name)
+                raise
+        return selected
+
+
+def write_journal(
+    path: Path,
+    destination: Path,
+    identity: DirectoryIdentity,
+    payload: bytes,
+) -> None:
+    encoded = identity.as_dict()
     path.write_text(
         json.dumps(
             {
+                "phase": "PREPARED",
                 "destination": str(absolute(destination)),
-                "destination_directory_identity": identity.as_dict(),
+                "temporary": str(absolute(destination.with_suffix(destination.suffix + ".part"))),
+                "directory_identity_at_selection": encoded,
+                "directory_identity_at_temporary_creation": encoded,
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "bytes": len(payload),
             },
             sort_keys=True,
         ),
@@ -251,47 +714,60 @@ def write_journal(path: Path, destination: Path, identity: DirectoryIdentity) ->
     )
 
 
-def reconcile(journal_path: Path, temporary: Path) -> Path:
+def reconcile(journal_path: Path) -> Path:
     journal = json.loads(journal_path.read_text(encoding="utf-8"))
     destination = absolute(Path(journal["destination"]))
-    expected = DirectoryIdentity.from_dict(journal["destination_directory_identity"])
+    temporary = absolute(Path(journal["temporary"]))
+    expected = DirectoryIdentity.from_dict(journal["directory_identity_at_selection"])
+    if DirectoryIdentity.from_dict(
+        journal["directory_identity_at_temporary_creation"]
+    ) != expected:
+        raise ControlError("recorded identities differ")
     with pin_chain(destination.parent, expected=expected) as chain:
-        publish_new(temporary, destination, chain)
-    return destination
+        with chain.final.open_file(
+            temporary.name,
+            create=False,
+            mutable=True,
+            deletable=True,
+        ) as file:
+            digest, size = sha256_file(file)
+            if digest != journal["sha256"] or size != journal["bytes"]:
+                raise ControlError("temporary identity mismatch")
+            chain.final.publish(file, temporary.name, destination.name)
+        journal["phase"] = "PUBLISHED"
+        journal["directory_identity_at_final_publication"] = (
+            chain.final.identity.as_dict()
+        )
+        journal_path.write_text(json.dumps(journal, sort_keys=True), encoding="utf-8")
+        return destination
 
 
-def extract_member(
-    payload: bytes,
-    staged_root: Path,
-    relative: str,
-    *,
-    probe: Callable[[str, Path], None] | None = None,
-) -> Path:
+def extract_payload(staged_root: Path, relative: str, payload: bytes) -> Path:
     root = absolute(staged_root)
-    parts = Path(*relative.split("/"))
-    target = absolute(root / parts)
-    target.relative_to(root)
-    with Pin(root) as root_pin:
-        parent = target.parent
-        current = root
-        with ExitStack() as stack:
-            pins = [root_pin]
-            for part in parent.relative_to(root).parts:
-                current /= part
-                pins[-1].verify()
-                current.mkdir(exist_ok=True)
-                pins.append(stack.enter_context(Pin(current)))
-            chain = Chain(tuple(pins))
-            temporary = target.with_suffix(target.suffix + ".part")
-            if probe is not None:
-                probe("before_temporary_open", temporary)
-            chain.verify()
-            with temporary.open("xb") as handle:
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-            if probe is not None:
-                probe("before_final_publication", target)
-            chain.verify()
-            publish_new(temporary, target, chain)
-            return target
+    with pin_chain(root.parent) as parent_chain:
+        root_pin = parent_chain.final.replace_empty_staging_child(root.name)
+        with root_pin, ExitStack() as stack:
+            parts = Path(*relative.split("/"))
+            current = root_pin
+            for part in parts.parent.parts:
+                current = stack.enter_context(current.child(part, create=True))
+            temp_name = f"{parts.name}.part"
+            with current.open_file(
+                temp_name,
+                create=True,
+                mutable=True,
+                deletable=True,
+            ) as file:
+                published = False
+                try:
+                    file.write(payload)
+                    file.flush()
+                    os.fsync(file.fileno())
+                    current.publish(file, temp_name, parts.name)
+                    published = True
+                except BaseException:
+                    if not published:
+                        with suppress(Exception):
+                            current.delete_without_verify(file, temp_name)
+                    raise
+            return root / parts
