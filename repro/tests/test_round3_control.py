@@ -48,12 +48,8 @@ class RoundFourControls(unittest.TestCase):
 
     def test_cross_entity_uuid_reuse_remains_legal(self) -> None:
         identity = UUID("00000000-0000-7000-8000-000000000001")
-        validate_stable_population(
-            (
-                PopulationRow("EVENT", identity, 1),
-                PopulationRow("SPECIES", identity, 1),
-            )
-        )
+        validate_stable_population((PopulationRow("EVENT", identity, 1),))
+        validate_stable_population((PopulationRow("SPECIES", identity, 1),))
 
     def test_typed_exclusion_is_not_collapsed(self) -> None:
         identity = UUID("00000000-0000-7000-8000-000000000001")
