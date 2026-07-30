@@ -1,0 +1,2 @@
+Final PR-triggered Generation-8 Windows handle-control validation.
+No private data or source history.
