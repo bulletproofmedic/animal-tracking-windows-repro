@@ -1,13 +1,15 @@
 $ErrorActionPreference = "Stop"
+$PSNativeCommandUseErrorActionPreference = $true
 
-Write-Host "Compiling sanitized AT-WAL-008 round-three control model"
-python -m compileall -q repro
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+Write-Host "AT-WAL-008 ROUND-FOUR PUBLIC WINDOWS VALIDATION"
+Write-Host "scope=synthetic typed identity, payload cancellation, and shallow history controls"
+Write-Host "private_history=not_present"
+Write-Host "sensitive_data=not_present"
 
-Write-Host "Running sanitized AT-WAL-008 round-three control tests"
+python -m compileall -q repro/round3_control.py repro/tests/test_round3_control.py
 python -m unittest discover -s repro/tests -p "test_round3_control.py" -v
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-Write-Host "Emitting measured per-mutant producer evidence"
 python repro/round3_control.py
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+python scripts/check_public_payload.py
+git diff --check
+
+Write-Host "AT-WAL-008 ROUND-FOUR PUBLIC WINDOWS VALIDATION: PASS"
