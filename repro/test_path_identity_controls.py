@@ -2,51 +2,52 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
-from repro.path_identity_model import (
-    ControlError,
-    Pin,
-    extract_member,
-    pin_chain,
-    publish_new,
-    reconcile,
-    write_journal,
-)
+import repro.path_identity_model as model
+from repro.path_identity_model import ControlError
 
 
-def attempt_swap(directory: Path, external: Path) -> bool:
+def attempt_swap(directory: Path, external: Path) -> tuple[bool, Path]:
     parked = directory.with_name(f"{directory.name}.parked")
     try:
         directory.rename(parked)
     except OSError:
-        return False
+        return False, parked
     os.symlink(external, directory, target_is_directory=True)
-    return True
+    return True, parked
 
 
 class PathIdentityControls(unittest.TestCase):
-    def test_pinned_directory_blocks_or_detects_replacement(self) -> None:
+    def tearDown(self) -> None:
+        model.PROBE = lambda _boundary, _path: None
+
+    def test_happy_path_publication_uses_recorded_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             selected = root / "selected"
-            external = root / "external"
             selected.mkdir()
-            external.mkdir()
-            with Pin(selected) as pin:
-                swapped = attempt_swap(selected, external)
-                if swapped:
-                    with self.assertRaises(ControlError):
-                        pin.verify()
-                else:
-                    pin.verify()
+            identity = model.publish_payload(
+                selected,
+                "backup.atbackup",
+                b"synthetic-backup",
+            )
+            self.assertEqual(
+                (selected / "backup.atbackup").read_bytes(),
+                b"synthetic-backup",
+            )
+            self.assertEqual(
+                set(identity.as_dict()),
+                {"device", "inode", "volume_serial", "file_index"},
+            )
 
-    def test_backup_publication_cannot_escape_selected_directory(self) -> None:
+    def test_backup_publication_after_check_swap_never_writes_external(self) -> None:
         self._publication_swap_case("backup.atbackup")
 
-    def test_failed_root_export_cannot_escape_selected_directory(self) -> None:
+    def test_failed_root_export_after_check_swap_never_writes_external(self) -> None:
         self._publication_swap_case("failed-root.zip")
 
     def _publication_swap_case(self, name: str) -> None:
@@ -56,102 +57,183 @@ class PathIdentityControls(unittest.TestCase):
             external = root / "external"
             selected.mkdir()
             external.mkdir()
-            source = selected / f"{name}.part"
-            destination = selected / name
-            source.write_bytes(b"synthetic-private-bytes")
-            if os.name == "nt":
-                with pin_chain(selected) as chain:
-                    swapped = attempt_swap(selected, external)
-                    self.assertFalse(swapped)
-                    publish_new(source, destination, chain)
-            else:
-                with self.assertRaises(ControlError):
-                    with pin_chain(selected) as chain:
-                        swapped = attempt_swap(selected, external)
-                        self.assertTrue(swapped)
-                        publish_new(source, destination, chain)
-            self.assertFalse((external / name).exists())
+            state: dict[str, object] = {"attempted": False, "parked": None}
 
-    def test_restart_reconciliation_rejects_replaced_directory(self) -> None:
+            def probe(boundary: str, _path: Path) -> None:
+                if boundary != "after_final_parent_identity_check":
+                    return
+                if state["attempted"]:
+                    return
+                state["attempted"] = True
+                swapped, parked = attempt_swap(selected, external)
+                state["swapped"] = swapped
+                state["parked"] = parked
+
+            model.PROBE = probe
+            with self.assertRaises(ControlError):
+                model.publish_payload(selected, name, b"synthetic-private-bytes")
+            self.assertTrue(state["attempted"])
+            self.assertTrue(state.get("swapped"))
+            self.assertFalse((external / name).exists())
+            self.assertEqual(list(external.iterdir()), [])
+
+    def test_temporary_creation_after_check_swap_never_writes_external(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            selected = root / "selected"
+            external = root / "external"
+            selected.mkdir()
+            external.mkdir()
+            state = {"attempted": False}
+
+            def probe(boundary: str, _path: Path) -> None:
+                if boundary != "after_temporary_parent_identity_check":
+                    return
+                if state["attempted"]:
+                    return
+                state["attempted"] = True
+                state["swapped"], state["parked"] = attempt_swap(
+                    selected,
+                    external,
+                )
+
+            model.PROBE = probe
+            with self.assertRaises(ControlError):
+                model.publish_payload(selected, "backup.atbackup", b"payload")
+            self.assertTrue(state["attempted"])
+            self.assertTrue(state.get("swapped"))
+            self.assertEqual(list(external.iterdir()), [])
+
+    def test_restart_reconciliation_rejects_replaced_directory_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             selected = root / "selected"
             selected.mkdir()
             destination = selected / "backup.atbackup"
-            journal = root / "journal.json"
-            with Pin(selected) as pin:
-                write_journal(journal, destination, pin.identity)
-            original = root / "original"
-            selected.rename(original)
+            temporary = destination.with_suffix(destination.suffix + ".part")
+            payload = b"synthetic"
+            with model.pin_chain(selected) as chain:
+                with chain.final.open_file(
+                    temporary.name,
+                    create=True,
+                    mutable=True,
+                    deletable=True,
+                ) as file:
+                    file.write(payload)
+                journal = root / "journal.json"
+                model.write_journal(
+                    journal,
+                    destination,
+                    chain.final.identity,
+                    payload,
+                )
+            selected.rename(root / "original")
             selected.mkdir()
-            temporary = selected / "backup.atbackup.part"
-            temporary.write_bytes(b"synthetic")
             with self.assertRaises(ControlError):
-                reconcile(journal, temporary)
+                model.reconcile(journal)
             self.assertFalse(destination.exists())
 
-    def test_journal_records_all_directory_identity_fields(self) -> None:
+    def test_restart_records_final_identity_on_success(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             selected = root / "selected"
             selected.mkdir()
-            journal = root / "journal.json"
-            with Pin(selected) as pin:
-                write_journal(journal, selected / "backup.atbackup", pin.identity)
+            destination = selected / "backup.atbackup"
+            temporary = destination.with_suffix(destination.suffix + ".part")
+            payload = b"synthetic"
+            with model.pin_chain(selected) as chain:
+                with chain.final.open_file(
+                    temporary.name,
+                    create=True,
+                    mutable=True,
+                    deletable=True,
+                ) as file:
+                    file.write(payload)
+                journal = root / "journal.json"
+                model.write_journal(
+                    journal,
+                    destination,
+                    chain.final.identity,
+                    payload,
+                )
+            model.reconcile(journal)
             value = json.loads(journal.read_text(encoding="utf-8"))
+            self.assertEqual(value["phase"], "PUBLISHED")
             self.assertEqual(
-                set(value["destination_directory_identity"]),
-                {"device", "inode", "volume_serial", "file_index"},
+                value["directory_identity_at_selection"],
+                value["directory_identity_at_final_publication"],
             )
+            self.assertEqual(destination.read_bytes(), payload)
 
-    def test_publication_never_replaces_existing_target(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / "source.part"
-            destination = root / "target.zip"
-            source.write_bytes(b"new")
-            destination.write_bytes(b"existing")
-            with pin_chain(root) as chain:
-                with self.assertRaises(ControlError):
-                    publish_new(source, destination, chain)
-            self.assertEqual(destination.read_bytes(), b"existing")
-
-    def test_restore_boundaries_cover_database_media_maps_and_nested_files(self) -> None:
+    def test_restore_all_member_classes_resist_post_check_parent_swap(self) -> None:
         for relative in (
             "data/database.bin",
             "media/item.bin",
             "maps/source/item.bin",
             "contributors/nested/item.bin",
         ):
-            for boundary in ("before_temporary_open", "before_final_publication"):
-                with self.subTest(relative=relative, boundary=boundary):
-                    self._restore_swap_case(relative, boundary)
+            with self.subTest(relative=relative):
+                self._restore_swap_case(relative)
 
-    def _restore_swap_case(self, relative: str, boundary: str) -> None:
+    def _restore_swap_case(self, relative: str) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             staged = root / "staged"
             external = root / "external"
             staged.mkdir()
             external.mkdir()
-            state = {"attempted": False, "succeeded": False}
+            state = {"attempted": False}
 
-            def probe(observed: str, path: Path) -> None:
-                if observed != boundary or state["attempted"]:
+            def probe(boundary: str, path: Path) -> None:
+                if boundary != "after_final_parent_identity_check":
+                    return
+                if state["attempted"]:
                     return
                 state["attempted"] = True
-                state["succeeded"] = attempt_swap(path.parent, external)
+                state["swapped"], state["parked"] = attempt_swap(
+                    path.parent,
+                    external,
+                )
 
-            if os.name == "nt":
-                target = extract_member(b"synthetic", staged, relative, probe=probe)
-                self.assertEqual(target.read_bytes(), b"synthetic")
-                self.assertFalse(state["succeeded"])
-            else:
-                with self.assertRaises(ControlError):
-                    extract_member(b"synthetic", staged, relative, probe=probe)
-                self.assertTrue(state["succeeded"])
+            model.PROBE = probe
+            with self.assertRaises(ControlError):
+                model.extract_payload(staged, relative, b"synthetic")
             self.assertTrue(state["attempted"])
+            self.assertTrue(state.get("swapped"))
             self.assertFalse((external / Path(relative).name).exists())
+            self.assertEqual(list(external.iterdir()), [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows ACL test")
+    def test_staging_root_dacl_is_protected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            staged = root / "staged"
+            staged.mkdir()
+            model.extract_payload(staged, "data/item.bin", b"synthetic")
+            escaped = str(staged).replace("'", "''")
+            command = (
+                f"(Get-Acl -LiteralPath '{escaped}')."
+                "AreAccessRulesProtected"
+            )
+            result = subprocess.run(
+                ["pwsh", "-NoProfile", "-Command", command],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip().casefold(), "true")
+
+    def test_existing_destination_is_never_replaced(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            selected = root / "selected"
+            selected.mkdir()
+            destination = selected / "backup.atbackup"
+            destination.write_bytes(b"existing")
+            with self.assertRaises((ControlError, OSError)):
+                model.publish_payload(selected, destination.name, b"new")
+            self.assertEqual(destination.read_bytes(), b"existing")
 
 
 if __name__ == "__main__":
