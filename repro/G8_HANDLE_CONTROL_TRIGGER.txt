@@ -1,0 +1,2 @@
+Generation-8 bounded Windows handle-control diagnostic trigger.
+Synthetic platform validation only.
