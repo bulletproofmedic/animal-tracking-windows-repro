@@ -1,0 +1,27 @@
+name: Generation-8 Manifest Topology Reproducer
+
+on:
+  pull_request:
+    paths:
+      - "tools/generation8_manifest_topology_repro.py"
+      - ".github/workflows/generation8-manifest-topology.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  windows-reproducer:
+    name: Sanitized Windows manifest topology reproducer
+    runs-on: windows-2025
+    steps:
+      - name: Check out exact PR head
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.13.14"
+      - name: Run payload guard and topology matrix
+        run: python tools/generation8_manifest_topology_repro.py
