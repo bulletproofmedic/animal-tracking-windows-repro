@@ -483,3 +483,6 @@ if __name__ == "__main__":
 Set-Content -LiteralPath (Join-Path $root "validate_acl_guard.py") -Value $content -Encoding utf8NoBOM
 $env:PYTHONPATH = $root
 python (Join-Path $root "validate_acl_guard.py")
+python -m pip install --disable-pip-version-check ruff==0.15.22 mypy==2.3.0
+python -m ruff check (Join-Path $root "animal_tracking\_windows_acl_guard.py") (Join-Path $root "animal_tracking\__init__.py")
+python -m mypy --strict --python-version 3.13 (Join-Path $root "animal_tracking\_windows_acl_guard.py")
