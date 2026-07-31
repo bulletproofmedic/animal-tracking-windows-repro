@@ -1,0 +1,41 @@
+name: Generation-9 source remediation diagnostic
+
+on:
+  pull_request:
+    paths:
+      - "repro/**"
+      - ".github/workflows/g9-source-remediation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: validate-${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-2025
+          - ubuntu-24.04
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out exact diagnostic head
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13.14"
+      - name: Record environment
+        shell: pwsh
+        run: |
+          "os=${{ matrix.os }}" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "commit=$(git rev-parse HEAD)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "python=$(python --version)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "git=$(git --version)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+      - name: Run sanitized remediation diagnostic
+        run: python -m unittest -v repro.test_g9_source_remediation
