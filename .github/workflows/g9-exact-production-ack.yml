@@ -1,0 +1,67 @@
+name: Generation-9 exact production acknowledgement public fallback
+
+on:
+  pull_request:
+    paths:
+      - "repro/g9_exact_production_ack/**"
+      - ".github/workflows/g9-exact-production-ack.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-exact-production-path:
+    runs-on: windows-2025
+    steps:
+      - name: Check out exact diagnostic head
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13.14"
+
+      - name: Record exact environment
+        shell: pwsh
+        run: |
+          "runner_os=${{ runner.os }}" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "runner_image=windows-2025" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "commit=$(git rev-parse HEAD)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "python=$(python --version)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "git=$(git --version)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+      - name: Verify exact retained Git blobs
+        shell: pwsh
+        run: |
+          $expected = [ordered]@{
+            "repro/g9_exact_production_ack/animal_tracking/logging_config.py" = "4a527fca84a5dfe2305b589598e47d47fcfe6236"
+            "repro/g9_exact_production_ack/animal_tracking/security/events.py" = "adcab482c1488fbaa7a1971d6ce7b1a8c9930936"
+            "repro/g9_exact_production_ack/animal_tracking/_security_event_ack_guard.py" = "c7919944ae33fe093d047e525a858b8654a2aacd"
+            "repro/g9_exact_production_ack/animal_tracking/_windows_handle_security.py" = "5476cfda8c2e4e2d4424a5aca5d6bb5e7e8692bd"
+            "repro/g9_exact_production_ack/animal_tracking/_windows_acl_guard.py" = "3d55537e15c583bcfb6ac0f962bc8ff2ca1f13cb"
+            "repro/g9_exact_production_ack/tests/test_security_event_acknowledgement_windows.py" = "00441f7098b8fd52308e5642c6ae8e0273d34071"
+          }
+          foreach ($entry in $expected.GetEnumerator()) {
+            $actual = (git hash-object -- $entry.Key).Trim()
+            if ($LASTEXITCODE -ne 0) {
+              throw "Could not hash $($entry.Key)"
+            }
+            if ($actual -ne $entry.Value) {
+              throw "Blob mismatch for $($entry.Key): expected $($entry.Value), observed $actual"
+            }
+            "blob $($entry.Key)=$actual" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          }
+
+      - name: Install bounded test dependency
+        shell: pwsh
+        run: python -m pip install --disable-pip-version-check pytest==8.4.2
+
+      - name: Run exact retained Windows acknowledgement test
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "$env:GITHUB_WORKSPACE\repro\g9_exact_production_ack"
+          python -m pytest -q -s repro/g9_exact_production_ack/tests/test_security_event_acknowledgement_windows.py
