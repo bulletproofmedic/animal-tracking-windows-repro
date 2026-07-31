@@ -33,6 +33,7 @@ jobs:
           "commit=$(git rev-parse HEAD)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           "python=$(python --version)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           "git=$(git --version)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsBuildNumber, OsArchitecture | Format-List | Out-String | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
       - name: Verify exact retained Git blobs
         shell: pwsh
@@ -56,9 +57,9 @@ jobs:
             "blob $($entry.Key)=$actual" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           }
 
-      - name: Install bounded test dependency
+      - name: Install exact retained test dependency
         shell: pwsh
-        run: python -m pip install --disable-pip-version-check pytest==8.4.2
+        run: python -m pip install --disable-pip-version-check --no-input pytest==9.1.1
 
       - name: Run exact retained Windows acknowledgement test
         shell: pwsh
