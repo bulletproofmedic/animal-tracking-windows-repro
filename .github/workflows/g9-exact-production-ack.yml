@@ -1,4 +1,4 @@
-name: Generation-9 exact production acknowledgement public fallback
+name: Generation-10 exact private-successor acknowledgement public fallback
 
 on:
   pull_request:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  validate-exact-production-path:
+  validate-exact-private-successor-path:
     runs-on: windows-2025
     steps:
       - name: Check out exact diagnostic head
@@ -30,16 +30,16 @@ jobs:
         run: |
           "runner_os=${{ runner.os }}" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           "runner_image=windows-2025" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          "commit=$(git rev-parse HEAD)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "diagnostic_commit=$(git rev-parse HEAD)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "private_successor_commit=147b49aaf6549239b09dbd87212a7344ba5b374a" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "private_successor_tree=829c7e4b8ce9f812fd910a5bc577b331cf535eed" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           "python=$(python --version)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          "git=$(git --version)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsBuildNumber, OsArchitecture | Format-List | Out-String | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
-      - name: Verify exact retained Git blobs
+      - name: Verify unchanged exact production blobs
         shell: pwsh
         run: |
           $expected = [ordered]@{
-            "repro/g9_exact_production_ack/animal_tracking/logging_config.py" = "4a527fca84a5dfe2305b589598e47d47fcfe6236"
             "repro/g9_exact_production_ack/animal_tracking/security/events.py" = "adcab482c1488fbaa7a1971d6ce7b1a8c9930936"
             "repro/g9_exact_production_ack/animal_tracking/_security_event_ack_guard.py" = "c7919944ae33fe093d047e525a858b8654a2aacd"
             "repro/g9_exact_production_ack/animal_tracking/_windows_handle_security.py" = "5476cfda8c2e4e2d4424a5aca5d6bb5e7e8692bd"
@@ -48,50 +48,43 @@ jobs:
           }
           foreach ($entry in $expected.GetEnumerator()) {
             $actual = (git hash-object -- $entry.Key).Trim()
-            if ($LASTEXITCODE -ne 0) {
-              throw "Could not hash $($entry.Key)"
-            }
+            if ($LASTEXITCODE -ne 0) { throw "Could not hash $($entry.Key)" }
             if ($actual -ne $entry.Value) {
               throw "Blob mismatch for $($entry.Key): expected $($entry.Value), observed $actual"
             }
-            "retained_blob $($entry.Key)=$actual" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            "exact_blob $($entry.Key)=$actual" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           }
 
-      - name: Apply exact bounded ACL owner correction
+      - name: Materialize and verify exact private successor logging blob
         shell: pwsh
         run: |
           $path = "repro/g9_exact_production_ack/animal_tracking/logging_config.py"
+          $retainedBlob = (git hash-object -- $path).Trim()
+          if ($retainedBlob -ne "4a527fca84a5dfe2305b589598e47d47fcfe6236") {
+            throw "Retained input blob mismatch: observed $retainedBlob"
+          }
           $before = '$owner = $verified.Owner.Translate([System.Security.Principal.SecurityIdentifier]).Value'
           $after = '$owner = $verified.GetOwner([System.Security.Principal.SecurityIdentifier]).Value'
           $text = [System.IO.File]::ReadAllText($path)
           $matches = ([regex]::Matches($text, [regex]::Escape($before))).Count
-          if ($matches -ne 1) { throw "Expected exactly one vulnerable owner-verification line; observed $matches" }
+          if ($matches -ne 1) { throw "Expected exactly one source replacement; observed $matches" }
           [System.IO.File]::WriteAllText($path, $text.Replace($before, $after), [System.Text.UTF8Encoding]::new($false))
-          $correctedBlob = (git hash-object -- $path).Trim()
-          "corrected_blob=$correctedBlob" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-          New-Item -ItemType Directory -Force corrected-source | Out-Null
-          Copy-Item $path corrected-source/logging_config.py
-          [ordered]@{
-            source_retained_commit = "1bc484ecc689620aa3d6f7bdde3719d57c639607"
-            source_retained_blob = "4a527fca84a5dfe2305b589598e47d47fcfe6236"
-            corrected_blob = $correctedBlob
-            correction = "ObjectSecurity.GetOwner(SecurityIdentifier) replaces invalid String.Translate call"
-          } | ConvertTo-Json | Set-Content -Encoding utf8NoBOM corrected-source/PATCH_METADATA.json
+          $successorBlob = (git hash-object -- $path).Trim()
+          if ($successorBlob -ne "3f16826aa03503cc1c1e11ee417380c26af49ef6") {
+            throw "Exact successor blob mismatch: expected 3f16826aa03503cc1c1e11ee417380c26af49ef6, observed $successorBlob"
+          }
+          if (([regex]::Matches([System.IO.File]::ReadAllText($path), [regex]::Escape($after))).Count -ne 1) {
+            throw "Corrected owner-verification line was not unique"
+          }
+          "retained_logging_blob=$retainedBlob" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "exact_private_successor_logging_blob=$successorBlob" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
       - name: Install exact retained test dependency
         shell: pwsh
         run: python -m pip install --disable-pip-version-check --no-input pytest==9.1.1
 
-      - name: Run corrected exact production acknowledgement test
+      - name: Run exact private successor production acknowledgement test
         shell: pwsh
         run: |
           $env:PYTHONPATH = "$env:GITHUB_WORKSPACE\repro\g9_exact_production_ack"
           python -m pytest -q -s repro/g9_exact_production_ack/tests/test_security_event_acknowledgement_windows.py
-
-      - name: Upload validated corrected source
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: g10-corrected-logging-config
-          path: corrected-source
-          if-no-files-found: error
-          retention-days: 7

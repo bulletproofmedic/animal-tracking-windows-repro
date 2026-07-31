@@ -1,18 +1,25 @@
 {
-  "schema_version": "1.0",
-  "record_type": "ANIMAL_TRACKING_R1_SECURITY_LOGGING_G9_PUBLIC_EXACT_SOURCE_MANIFEST",
+  "schema_version": "2.0",
+  "record_type": "ANIMAL_TRACKING_R1_SECURITY_LOGGING_G10_PUBLIC_EXACT_SUCCESSOR_MANIFEST",
   "source_repository": "bulletproofmedic/animal-tracking",
   "source_retained_commit": "1bc484ecc689620aa3d6f7bdde3719d57c639607",
   "source_retained_tree": "caae5dd7e3ee34306321695fa590e090778369df",
+  "source_successor_branch": "fix/r1-security-logging-generation-10-source",
+  "source_successor_commit": "147b49aaf6549239b09dbd87212a7344ba5b374a",
+  "source_successor_tree": "829c7e4b8ce9f812fd910a5bc577b331cf535eed",
   "public_repository": "bulletproofmedic/animal-tracking-windows-repro",
   "public_branch": "repro/r1-security-logging-g9-exact-production-ack",
-  "objective": "Run the exact retained Generation-9 production security-event acknowledgement path and exact retained Windows test on a public Windows runner.",
-  "exact_files": [
-    {
-      "source_path": "src/animal_tracking/logging_config.py",
-      "public_path": "repro/g9_exact_production_ack/animal_tracking/logging_config.py",
-      "git_blob_sha": "4a527fca84a5dfe2305b589598e47d47fcfe6236"
-    },
+  "objective": "Materialize the exact one-line private successor logging source, verify its Git blob identity, and run the unchanged exact production acknowledgement test on Windows 2025.",
+  "runtime_materialized_exact_file": {
+    "source_path": "src/animal_tracking/logging_config.py",
+    "public_input_path": "repro/g9_exact_production_ack/animal_tracking/logging_config.py",
+    "retained_input_git_blob_sha": "4a527fca84a5dfe2305b589598e47d47fcfe6236",
+    "successor_git_blob_sha": "3f16826aa03503cc1c1e11ee417380c26af49ef6",
+    "replacement_count": 1,
+    "old_line": "$owner = $verified.Owner.Translate([System.Security.Principal.SecurityIdentifier]).Value",
+    "new_line": "$owner = $verified.GetOwner([System.Security.Principal.SecurityIdentifier]).Value"
+  },
+  "unchanged_exact_files": [
     {
       "source_path": "src/animal_tracking/security/events.py",
       "public_path": "repro/g9_exact_production_ack/animal_tracking/security/events.py",
@@ -39,20 +46,6 @@
       "git_blob_sha": "00441f7098b8fd52308e5642c6ae8e0273d34071"
     }
   ],
-  "harness_only_files": [
-    {
-      "public_path": "repro/g9_exact_production_ack/animal_tracking/__init__.py",
-      "purpose": "Install only the exact retained Windows ACL and security-event acknowledgement guards without importing unrelated private package modules."
-    },
-    {
-      "public_path": "repro/g9_exact_production_ack/animal_tracking/security/__init__.py",
-      "purpose": "Package marker only."
-    },
-    {
-      "public_path": ".github/workflows/g9-exact-production-ack.yml",
-      "purpose": "Verify exact Git blob identities and run the exact retained Windows test."
-    }
-  ],
   "sanitization_boundary": {
     "private_git_history_copied": false,
     "private_branch_copied": false,
@@ -63,8 +56,8 @@
     "synthetic_test_data_only": true
   },
   "authority_boundary": {
-    "owner_public_fallback_instruction_date": "2026-07-31",
-    "public_validation_may_be_used_as_current_fallback_evidence": true,
+    "public_validation_is_current_fallback_evidence": true,
+    "required_private_runner_validation_replaced": false,
     "independent_finding_revalidation_performed_by_this_workflow": false,
     "audit_finding_closed_by_this_workflow": false,
     "merge_authorized": false,
