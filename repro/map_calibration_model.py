@@ -290,7 +290,7 @@ class StagedPublisher:
     def _write_journal(self, journal: ActivationJournal) -> None:
         temp = self.journal_path.with_suffix(".tmp")
         temp.write_text(json.dumps(asdict(journal), sort_keys=True), encoding="utf-8")
-        with temp.open("rb") as handle:
+        with temp.open("r+b") as handle:
             os.fsync(handle.fileno())
         os.replace(temp, self.journal_path)
 
@@ -308,7 +308,7 @@ class StagedPublisher:
         if final.exists() or temporary.exists():
             raise ControlError("publication target already exists")
         temporary.write_bytes(payload)
-        with temporary.open("rb") as handle:
+        with temporary.open("r+b") as handle:
             os.fsync(handle.fileno())
         digest, size = self._identity(temporary)
         journal = ActivationJournal("STAGING", name, temporary.name, digest, size)
