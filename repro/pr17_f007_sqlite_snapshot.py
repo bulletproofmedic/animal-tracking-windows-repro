@@ -149,7 +149,8 @@ def build_rows(
 
 
 def initialize_database(path: Path, *, row_count: int = 1) -> None:
-    with sqlite3.connect(path) as connection:
+    connection = sqlite3.connect(path)
+    try:
         connection.execute("PRAGMA journal_mode = WAL")
         connection.execute(
             "CREATE TABLE source_state (singleton INTEGER PRIMARY KEY, revision INTEGER NOT NULL)"
@@ -162,14 +163,30 @@ def initialize_database(path: Path, *, row_count: int = 1) -> None:
             "INSERT INTO projected_row VALUES (?, 1)",
             [(f"row-{index:04d}",) for index in range(1, row_count + 1)],
         )
+        connection.commit()
+    finally:
+        connection.close()
 
 
 def mutate_database(path: Path) -> None:
-    with sqlite3.connect(path, isolation_level=None, timeout=5.0) as connection:
+    connection = sqlite3.connect(path, isolation_level=None, timeout=5.0)
+    try:
         connection.execute("BEGIN IMMEDIATE")
         connection.execute("UPDATE source_state SET revision = 2 WHERE singleton = 1")
         connection.execute("INSERT INTO projected_row VALUES ('row-later', 2)")
         connection.commit()
+    finally:
+        connection.close()
+
+
+def read_current_database(path: Path) -> tuple[int, int]:
+    connection = sqlite3.connect(path)
+    try:
+        revision = int(connection.execute("SELECT revision FROM source_state").fetchone()[0])
+        row_count = int(connection.execute("SELECT COUNT(*) FROM projected_row").fetchone()[0])
+        return revision, row_count
+    finally:
+        connection.close()
 
 
 class SQLiteSnapshotTests(unittest.TestCase):
@@ -191,9 +208,9 @@ class SQLiteSnapshotTests(unittest.TestCase):
         self.assertEqual(len(set(snapshot.session_ids)), 1)
         self.assertEqual(snapshot.close_calls, 1)
         self.assertEqual(snapshot.commit_calls, 1)
-        with sqlite3.connect(path) as connection:
-            self.assertEqual(connection.execute("SELECT revision FROM source_state").fetchone()[0], 2)
-            self.assertEqual(connection.execute("SELECT COUNT(*) FROM projected_row").fetchone()[0], 2)
+        current_revision, current_row_count = read_current_database(path)
+        self.assertEqual(current_revision, 2)
+        self.assertEqual(current_row_count, 2)
 
     def test_exception_rolls_back_and_closes_once(self) -> None:
         temporary, path = self.database()
