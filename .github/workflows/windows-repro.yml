@@ -34,6 +34,25 @@ jobs:
             throw "Exact target checkout mismatch."
           }
 
+      - name: Bind private target identity (metadata only)
+        shell: pwsh
+        env:
+          PRIVATE_TARGET_COMMIT: 61d657b93fc31b2916fc1af7ddb92f72ba387bce
+          PRIVATE_TARGET_TREE: d0a8f3c2a86078ffe499dc70032802de8c5a774a
+        run: |
+          $ErrorActionPreference = "Stop"
+          $targets = @{
+            PRIVATE_TARGET_COMMIT = $env:PRIVATE_TARGET_COMMIT
+            PRIVATE_TARGET_TREE = $env:PRIVATE_TARGET_TREE
+          }
+          foreach ($target in $targets.GetEnumerator()) {
+            if ($target.Value -cnotmatch '^[0-9a-f]{40}$') {
+              throw "$($target.Key) must be lowercase 40-hex."
+            }
+            Write-Host "$($target.Key)=$($target.Value)"
+          }
+          Write-Host "PRIVATE_TARGET_BINDING=IDENTITY_ONLY"
+
       - name: Set up parity Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
