@@ -103,7 +103,7 @@ public final class PSTProofStore: @unchecked Sendable {
     }
 }
 
-private extension UUID {
+extension UUID {
     var bytes: [UInt8] { withUnsafeBytes(of: uuid) { Array($0) } }
 
     init(bytes: [UInt8]) {
