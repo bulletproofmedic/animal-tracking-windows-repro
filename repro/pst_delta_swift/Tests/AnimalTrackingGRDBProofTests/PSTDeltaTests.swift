@@ -39,18 +39,17 @@ func independentOracle() throws {
 
 @Test("Complete semantic population is frozen")
 func population() throws {
-    #expect(PSTDeltaGenerator().population() == PSTPopulation(
-        packages: 1_000,
-        items: 100_000,
-        dependencyItems: 500,
-        dependencyPackages: 50,
-        conflicts: 25,
-        mediaDescriptors: 10_000,
-        mediaIdentities: 5_000,
-        replays: 100,
-        mismatches: 10,
-        attempts: 1_110
-    ))
+    let value = PSTDeltaGenerator().population()
+    #expect(value.packages == 1_000)
+    #expect(value.items == 100_000)
+    #expect(value.dependencyItems == 500)
+    #expect(value.dependencyPackages == 50)
+    #expect(value.conflicts == 25)
+    #expect(value.mediaDescriptors == 10_000)
+    #expect(value.mediaIdentities == 5_000)
+    #expect(value.replays == 100)
+    #expect(value.mismatches == 10)
+    #expect(value.attempts == 1_110)
 }
 
 @Test("Materialization contains dependency, conflict, and media semantics")
@@ -68,8 +67,8 @@ func materialization() throws {
 func mismatchBytes() throws {
     let generator = PSTDeltaGenerator()
     let order = try generator.uniqueOrder()
-    let rank = try #require(order.firstIndex(of: PSTPackageKey(origin: 4, sequence: 10))).advanced(by: 1)
-    let mismatch = try generator.mismatch(rank: rank)
+    let index = try #require(order.firstIndex { $0.origin == 4 && $0.sequence == 10 })
+    let mismatch = try generator.mismatch(rank: index + 1)
     #expect(mismatch.original.count == mismatch.mutated.count)
     #expect(zip(mismatch.original, mismatch.mutated).filter { $0 != $1 }.count == 1)
     #expect(mismatch.originalSHA256 != mismatch.mutatedSHA256)
