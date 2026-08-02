@@ -13,7 +13,7 @@ let generator = PSTDeltaGenerator()
 do {
     try generator.validateFrozen()
     let oracle = try PSTIndependentOracle().scheduleProjection()
-    guard oracle == generator.scheduleProjection() else { throw PSTError.digestMismatch }
+    guard oracle == (try generator.scheduleProjection()) else { throw PSTError.digestMismatch }
     print("Animal Tracking sanitized PST-DELTA consumer reproducer")
     print("Fixture: \(PSTFixture.id) \(PSTFixture.version)")
     print("Schedule projection SHA-256: \(PSTCanonical.sha256(oracle))")
