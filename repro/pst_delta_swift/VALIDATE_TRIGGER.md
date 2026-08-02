@@ -1,3 +1,3 @@
 # Validation trigger
 
-Created after the macOS Swift workflow became present on the default branch.
+Re-triggered for AT-OWN-010 target-Apple GRDB consumer validation on 2026-08-02. Synthetic proof data only.
