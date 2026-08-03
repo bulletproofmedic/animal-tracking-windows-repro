@@ -71,6 +71,15 @@ jobs:
           $ErrorActionPreference = "Stop"
           & "repro/run.ps1"
 
+      - name: Upload exact validated semantic package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: control-exchange-semantic-v1.3.0
+          path: repro/cx_final
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+
       - name: Publish exact final semantic output
         if: github.ref == 'refs/heads/repro/cx-semantic-final-20260803'
         shell: pwsh
@@ -79,7 +88,8 @@ jobs:
           git add -- repro/cx_final
           $changes = git status --porcelain -- repro/cx_final
           if (-not $changes) {
-            throw "Semantic reproducer produced no publishable output."
+            Write-Host "Validated output already published."
+            exit 0
           }
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
