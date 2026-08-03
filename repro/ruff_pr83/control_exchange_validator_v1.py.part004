@@ -1,0 +1,161 @@
+    return [] if _barrier_common(b, "effective_cutover_marker", "CUTOVER") else [error("CX-SV-021", "CUTOVER_BARRIER_INVALID")]
+
+
+def rule_022(b: Bundle) -> list[str]:
+    marker = b.record("rollback_marker")
+    if not _barrier_common(b, "rollback_marker", "ROLLBACK"):
+        return [error("CX-SV-022", "ROLLBACK_BARRIER_INVALID")]
+    aliases = b.context.get("rollback_ack_aliases", [])
+    required = {"AT-ROUTER-001", "AT-ROUTER-002", "AT-ROUTER-003"}
+    seen = set()
+    for alias in aliases:
+        ack = b.record(alias)
+        ref = next((x for x in marker.get("rollback_acknowledgements", []) if x.get("alias") == alias), None)
+        if not isinstance(ref, dict) or ref.get("sha256") != b.raw_sha(alias):
+            return [error("CX-SV-022", "ROLLBACK_ACK_HASH")]
+        if ack.get("record_type") != "ANIMAL_TRACKING_CONTROL_EXCHANGE_ROLLBACK_ROUTER_ACKNOWLEDGEMENT":
+            return [error("CX-SV-022", "WRONG_ACKNOWLEDGEMENT_TYPE")]
+        if ack.get("rollback_id") != marker.get("rollback_id"):
+            return [error("CX-SV-022", "ROLLBACK_ID_MISMATCH")]
+        if ack.get("future_operational_commit") != marker.get("future_operational_commit"):
+            return [error("CX-SV-022", "FUTURE_SOURCE_MISMATCH")]
+        seen.add(ack.get("router_id"))
+    return [] if seen == required else [error("CX-SV-022", "ROLLBACK_ACK_SET")]
+
+
+def rule_023(b: Bundle) -> list[str]:
+    inventory = b.record("rollback_scope_inventory")
+    claims = inventory.get("native_claims", [])
+    if inventory.get("native_claim_count") != len(claims):
+        return [error("CX-SV-023", "SCOPE_COUNT_MISMATCH")]
+    ids = [x.get("claim_id") for x in claims]
+    if len(ids) != len(set(ids)):
+        return [error("CX-SV-023", "DUPLICATE_CLAIM")]
+    allowed = {"COMPLETE_UNDER_RECORDED_PROCEDURE", "RECOVER_UNDER_RECORDED_PROCEDURE", "QUARANTINE_CONFLICT"}
+    for item in claims:
+        if item.get("disposition") not in allowed:
+            return [error("CX-SV-023", "INVALID_DISPOSITION")]
+        if item.get("disposition") == "COMPLETE_UNDER_RECORDED_PROCEDURE" and not item.get("terminal_result_sha256"):
+            return [error("CX-SV-023", "MISSING_TERMINAL_RESULT")]
+        if item.get("disposition") == "RECOVER_UNDER_RECORDED_PROCEDURE" and not item.get("recovery_checkpoint_sha256"):
+            return [error("CX-SV-023", "MISSING_RECOVERY_CHECKPOINT")]
+    if inventory.get("unresolved_legacy_conflict_count", 0) != 0:
+        return [error("CX-SV-023", "UNRESOLVED_LEGACY_CONFLICT")]
+    return []
+
+
+def rule_024(b: Bundle) -> list[str]:
+    failures = b.context.get("pre_mutation_failures", [])
+    if failures:
+        return [error("CX-SV-024", str(failures[0]))]
+    path_state = b.context.get("deterministic_path_state", "NEW")
+    if path_state == "SAME_PATH_DIFFERENT_SHA256":
+        return [error("CX-SV-024", "CONFLICT_NO_MUTATION")]
+    if path_state not in {"NEW", "SAME_PATH_SAME_SHA256"}:
+        return [error("CX-SV-024", "UNKNOWN_PATH_STATE")]
+    return []
+
+
+RULES: dict[str, Callable[[Bundle], list[str]]] = {
+    f"CX-SV-{i:03d}": globals()[f"rule_{i:03d}"] for i in range(1, 25)
+}
+
+
+def evaluate_bundle(value: dict[str, Any]) -> dict[str, Any]:
+    case_id = str(value.get("case_id", "UNNAMED"))
+    requested = value.get("requested_rules", list(RULE_IDS))
+    if not isinstance(requested, list) or any(rule not in RULES for rule in requested):
+        return {
+            "validator_version": VERSION,
+            "case_id": case_id,
+            "accepted": False,
+            "mutation_permitted": False,
+            "errors": ["VALIDATOR:UNKNOWN_RULE"],
+        }
+    try:
+        bundle = Bundle(value)
+    except ValidationFailure as exc:
+        return {
+            "validator_version": VERSION,
+            "case_id": case_id,
+            "accepted": False,
+            "mutation_permitted": False,
+            "errors": [f"VALIDATOR:BUNDLE:{exc}"],
+        }
+    errors: list[str] = []
+    for rule_id in requested:
+        try:
+            errors.extend(RULES[rule_id](bundle))
+        except (ValidationFailure, KeyError, TypeError, ValueError) as exc:
+            errors.append(error(rule_id, f"MISSING_OR_INVALID_INPUT:{exc}"))
+    accepted = not errors
+    return {
+        "validator_version": VERSION,
+        "case_id": case_id,
+        "accepted": accepted,
+        "mutation_permitted": accepted,
+        "errors": errors,
+    }
+
+
+def materialize_case(corpus: dict[str, Any], case: dict[str, Any]) -> dict[str, Any]:
+    base_id = case["base_bundle"]
+    base = copy.deepcopy(corpus["base_bundles"][base_id])
+    for patch in case.get("patches", []):
+        op = patch["op"]
+        if op == "set":
+            set_pointer(base, patch["path"], patch["value"])
+        elif op == "delete":
+            delete_pointer(base, patch["path"])
+        else:
+            raise ValidationFailure(f"unsupported patch operation {op}")
+    raw_records = {
+        alias: canonical_json(record)
+        for alias, record in base.get("records", {}).items()
+    }
+    return {
+        "bundle_version": "1.0",
+        "case_id": case["id"],
+        "requested_rules": case["requested_rules"],
+        "raw_records": raw_records,
+        "context": base.get("context", {}),
+    }
+
+
+def run_corpus(corpus: dict[str, Any]) -> dict[str, Any]:
+    case_results = []
+    passed = 0
+    for case in corpus.get("cases", []):
+        bundle = materialize_case(corpus, case)
+        observed = evaluate_bundle(bundle)
+        expected = case["expected"]
+        ok = (
+            observed["accepted"] == expected["accepted"]
+            and observed["mutation_permitted"] == expected["mutation_permitted"]
+            and observed["errors"] == expected["errors"]
+        )
+        case_results.append({"id": case["id"], "pass": ok, "observed": observed, "expected": expected})
+        passed += int(ok)
+    return {
+        "validator_version": VERSION,
+        "corpus_id": corpus.get("corpus_id"),
+        "case_count": len(case_results),
+        "passed": passed,
+        "failed": len(case_results) - passed,
+        "cases": case_results,
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("input", type=Path)
+    parser.add_argument("--corpus", action="store_true")
+    args = parser.parse_args(argv)
+    value = json.loads(args.input.read_text(encoding="utf-8"))
+    result = run_corpus(value) if args.corpus else evaluate_bundle(value)
+    sys.stdout.write(canonical_json(result) + "\n")
+    return 0 if (result.get("failed", 0) == 0 and result.get("accepted", True)) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

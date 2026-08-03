@@ -1,0 +1,66 @@
+{
+  "case_count": 80,
+  "failed": 0,
+  "files": {
+    "conformance/rules_001_004.json": {
+      "sha256": "bc6c1919c6ae4f5b0faf434caa18dd0457a2ff2ea7019156e8634d78266c1b42",
+      "size_bytes": 6630
+    },
+    "conformance/rules_005_008.json": {
+      "sha256": "2ff83368b38bc795fc714e046626bc8a0c019a6a890b52e81b7d686da0b47a24",
+      "size_bytes": 9589
+    },
+    "conformance/rules_009_012.json": {
+      "sha256": "d233dc5a1f638f5d4b441aa5695f8ae5ecf6ed36fb520769a28bfc885636dcec",
+      "size_bytes": 6196
+    },
+    "conformance/rules_013_016.json": {
+      "sha256": "c37a99c36a20e5099db0db25cde2031ebf849fa6ed4ee45a0319cf9d1ccded1b",
+      "size_bytes": 7836
+    },
+    "conformance/rules_017_020.json": {
+      "sha256": "1b704d35716b279b728d7854d14ec96112194cb280790a42f93ef497acd30555",
+      "size_bytes": 7333
+    },
+    "conformance/rules_021.json": {
+      "sha256": "b755994cc11dd380d5b67084e8f6191a6b73fbdb746e52c6bc937d11e2a2079e",
+      "size_bytes": 14586
+    },
+    "conformance/rules_022.json": {
+      "sha256": "d41830f2b70e66ea394e0fb60a4cc1d5e9968b00162950eafe521e31c42d495d",
+      "size_bytes": 14064
+    },
+    "conformance/rules_023_024.json": {
+      "sha256": "84d2a0da51f32012f45a0c07c17bdfdc7e0ad06b10325ab722fafbf5ede5b785",
+      "size_bytes": 11232
+    },
+    "control_exchange_validator_audit3_recovery_v1.py": {
+      "sha256": "04fe7bc1d0cb09902b6e3fed2f836a1a0319a91810c05d711e7174d2f02783c9",
+      "size_bytes": 8611
+    },
+    "control_exchange_validator_audit3_time_transaction_v1.py": {
+      "sha256": "2819febc6a3847f72a3b903ff4365f89da144d7956219d1df214063a89382879",
+      "size_bytes": 13689
+    },
+    "control_exchange_validator_audit3_v1.py": {
+      "sha256": "5044fdac17e97c2ecad02d68d5999161d38e65937519a803b8cbc4a8b1d8b85d",
+      "size_bytes": 554
+    },
+    "control_exchange_validator_conformance_v1.json": {
+      "sha256": "bb6b36c313c705b80da2bc8339fb1189638d5255e639e6340881f4add0b7fe6f",
+      "size_bytes": 3018
+    },
+    "control_exchange_validator_runner_v1.py": {
+      "sha256": "7e1a71f9c1821b53bc2ebdb4ba61122110dd3743bf093e1101b9de81d03e962e",
+      "size_bytes": 3826
+    },
+    "control_exchange_validator_v1.py": {
+      "sha256": "1bca4f433aea51ed4ab018b6bbe42d8857568ac3efd7c62fa5f33b3724bbf5f7",
+      "size_bytes": 32195
+    }
+  },
+  "passed": 80,
+  "record_type": "ANIMAL_TRACKING_CONTROL_EXCHANGE_PUBLIC_SEMANTIC_VALIDATION_RESULT",
+  "ruff_version": "0.15.22",
+  "validator_version": "1.3.0"
+}

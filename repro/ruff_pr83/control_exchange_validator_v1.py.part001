@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+"""Animal Tracking Control Exchange normative semantic evaluator v1.0.0.
+
+Dependency-free reference implementation selected by the Control Exchange
+semantic-validation contract. JSON Schema validation precedes this evaluator.
+This program evaluates only marker-bound semantic relationships and emits one
+canonical JSON result.
+"""
+from __future__ import annotations
+
+import argparse
+import copy
+import hashlib
+import json
+import re
+import sys
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+VERSION = "1.0.0"
+RULE_IDS = tuple(f"CX-SV-{i:03d}" for i in range(1, 25))
+_MISSING = object()
+
+
+class ValidationFailure(Exception):
+    pass
+
+
+def canonical_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def parse_time(value: Any) -> datetime:
+    if not isinstance(value, str):
+        raise ValidationFailure("timestamp is not a string")
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValidationFailure("invalid RFC3339 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValidationFailure("timestamp lacks explicit offset")
+    if parsed.microsecond != 0:
+        raise ValidationFailure("timestamp must use whole seconds")
+    return parsed.astimezone(UTC)
+
+
+def split_path(path: str) -> list[str]:
+    if not isinstance(path, str) or not path:
+        raise ValidationFailure("path is empty")
+    return path.split(".")
+
+
+def get_path(root: Any, path: str, default: Any = _MISSING) -> Any:
+    current = root
+    for token in split_path(path):
+        if isinstance(current, dict) and token in current:
+            current = current[token]
+        else:
+            if default is not _MISSING:
+                return default
+            raise ValidationFailure(f"missing path {path}")
+    return current
+
+
+def set_pointer(root: Any, pointer: str, value: Any) -> None:
+    if pointer == "":
+        raise ValidationFailure("root replacement is not supported")
+    if not pointer.startswith("/"):
+        raise ValidationFailure("patch path must be a JSON Pointer")
+    tokens = [t.replace("~1", "/").replace("~0", "~") for t in pointer[1:].split("/")]
+    current = root
+    for token in tokens[:-1]:
+        current = current[int(token)] if isinstance(current, list) else current[token]
+    last = tokens[-1]
+    if isinstance(current, list):
+        current[int(last)] = value
+    else:
+        current[last] = value
+
+
+def delete_pointer(root: Any, pointer: str) -> None:
+    if not pointer.startswith("/"):
+        raise ValidationFailure("patch path must be a JSON Pointer")
+    tokens = [t.replace("~1", "/").replace("~0", "~") for t in pointer[1:].split("/")]
+    current = root
+    for token in tokens[:-1]:
+        current = current[int(token)] if isinstance(current, list) else current[token]
+    last = tokens[-1]
+    if isinstance(current, list):
+        del current[int(last)]
+    else:
+        current.pop(last, None)
+
+
+class Bundle:
+    def __init__(self, value: dict[str, Any]):
+        if not isinstance(value, dict):
+            raise ValidationFailure("bundle root must be an object")
+        self.case_id = str(value.get("case_id", "UNNAMED"))
+        self.context = value.get("context", {})
+        if not isinstance(self.context, dict):
+            raise ValidationFailure("context must be an object")
+        raw_records = value.get("raw_records", {})
+        if not isinstance(raw_records, dict):
+            raise ValidationFailure("raw_records must be an object")
+        self.raw: dict[str, bytes] = {}
+        self.records: dict[str, Any] = {}
+        for alias, raw in raw_records.items():
+            if not isinstance(alias, str) or not isinstance(raw, str):
+                raise ValidationFailure("raw record aliases and values must be strings")
+            encoded = raw.encode("utf-8")
+            self.raw[alias] = encoded
+            try:
+                self.records[alias] = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ValidationFailure(f"record {alias} is not valid JSON") from exc
+
+    def record(self, alias: str, default: Any = _MISSING) -> Any:
+        if alias in self.records:
+            return self.records[alias]
+        if default is not _MISSING:
+            return default
+        raise ValidationFailure(f"missing record alias {alias}")
+
+    def raw_sha(self, alias: str) -> str:
+        if alias not in self.raw:
+            raise ValidationFailure(f"missing raw record alias {alias}")
+        return sha256_bytes(self.raw[alias])
+
+    def value(self, expression: str, default: Any = _MISSING) -> Any:
+        alias, sep, path = expression.partition(".")
+        if not sep:
+            return self.record(alias, default)
+        record = self.record(alias, default)
+        if record is default and default is not _MISSING:
+            return default
+        return get_path(record, path, default)
+
+
+def error(rule: str, code: str) -> str:
+    return f"{rule}:{code}"
+
+
+def rule_001(b: Bundle) -> list[str]:
+    r = b.record("work_receipt")
+    i = b.record("work_index_entry")
+    expected = f"{r['work_id']}--{r['route_id']}--G{r['work_receipt_generation']}"
+    pairs = [
+        r.get("work_receipt_id") == expected,
+        i.get("work_id") == r.get("work_id"),
+        i.get("route_id") == r.get("route_id"),
+        i.get("work_receipt_generation") == r.get("work_receipt_generation"),
+        i.get("work_receipt_id") == expected,
+    ]
+    return [] if all(pairs) else [error("CX-SV-001", "WORK_RECEIPT_ID_MISMATCH")]
+
+
+def rule_002(b: Bundle) -> list[str]:
+    index = b.record("work_index_entry")
+    expected = b.raw_sha("work_receipt")
+    if index.get("work_receipt_content_sha256") != expected:
+        return [error("CX-SV-002", "WORK_RECEIPT_RAW_HASH_MISMATCH")]
+    for alias in ("claim", "claim_renewal", "control_result", "recovery_checkpoint"):
+        record = b.record(alias, None)
+        if record is not None and record.get("work_receipt_content_sha256") != expected:
+            return [error("CX-SV-002", f"{alias.upper()}_HASH_MISMATCH")]
+    return []
+
+
+def rule_003(b: Bundle) -> list[str]:
+    c = b.record("claim")
+    expected = f"AT-CLAIM-{c['work_receipt_id']}--C{c['claim_generation']}"
+    return [] if c.get("claim_id") == expected else [error("CX-SV-003", "CLAIM_ID_MISMATCH")]
+
+
+def rule_004(b: Bundle) -> list[str]:
+    c = b.record("claim")
+    generation = c.get("claim_generation")
+    pred = b.record("predecessor_claim", None)
+    if generation == 0:
+        ok = pred is None and c.get("predecessor_claim_id") is None and c.get("claim_basis") == "INITIAL_CLAIM"
+    else:
+        ok = (
+            isinstance(pred, dict)
+            and generation == pred.get("claim_generation", -2) + 1
+            and c.get("predecessor_claim_id") == pred.get("claim_id")
+        )
+    return [] if ok else [error("CX-SV-004", "SKIPPED_OR_BAD_PREDECESSOR")]
+
+
+def _validate_time_ref(b: Bundle, binding: dict[str, Any]) -> bool:
+    obs_alias = binding["observation_alias"]

@@ -1,0 +1,200 @@
+    obs = b.record(obs_alias)
+    ref = b.value(binding["reference_path"])
+    action = parse_time(b.value(binding["action_path"]))
+    observed = parse_time(obs["effective_decision_time"])
+    if action != observed:
+        return False
+    if ref.get("time_observation_id") != obs.get("time_observation_id"):
+        return False
+    if ref.get("sha256") != b.raw_sha(obs_alias):
+        return False
+    if ref.get("payload_sha256") != obs.get("payload_sha256"):
+        return False
+    measured = obs.get("measured_skew_seconds")
+    maximum = obs.get("maximum_clock_skew_seconds")
+    if not isinstance(measured, int) or not isinstance(maximum, int):
+        return False
+    return abs(measured) <= maximum <= 120
+
+
+def rule_005(b: Bundle) -> list[str]:
+    try:
+        for binding in b.context.get("time_bindings", []):
+            if not _validate_time_ref(b, binding):
+                return [error("CX-SV-005", "TIME_BINDING_OR_SKEW")]
+        for earlier, later in b.context.get("strict_time_pairs", []):
+            if not parse_time(b.value(earlier)) < parse_time(b.value(later)):
+                return [error("CX-SV-005", "TIME_ORDER")]
+    except (ValidationFailure, KeyError, TypeError):
+        return [error("CX-SV-005", "TIME_BINDING_OR_SKEW")]
+    return []
+
+
+def rule_006(b: Bundle) -> list[str]:
+    renewal = b.record("claim_renewal")
+    claim = b.record("claim")
+    expected_id = f"AT-CRENEW-{renewal['claim_id']}-R{renewal['renewal_sequence']}"
+    fields = (
+        ("work_receipt_id", "work_receipt_id"),
+        ("work_receipt_content_sha256", "work_receipt_content_sha256"),
+        ("claim_id", "claim_id"),
+        ("claim_generation", "claim_generation"),
+        ("renewed_by_router_id", "owner_router_id"),
+        ("renewed_by_chat_id", "owner_chat_id"),
+        ("renewed_by_conversation_name", "owner_conversation_name"),
+    )
+    ok = renewal.get("renewal_id") == expected_id and all(renewal.get(a) == claim.get(c) for a, c in fields)
+    return [] if ok else [error("CX-SV-006", "OWNER_OR_IDENTITY_MISMATCH")]
+
+
+def rule_007(b: Bundle) -> list[str]:
+    r = b.record("claim_renewal")
+    prior = b.record("prior_claim_renewal", None)
+    claim = b.record("claim")
+    expected_sequence = 1 if prior is None else prior.get("renewal_sequence", -1) + 1
+    expected_previous = claim.get("lease_expires_at") if prior is None else prior.get("new_lease_expires_at")
+    try:
+        ok = (
+            r.get("renewal_sequence") == expected_sequence
+            and r.get("previous_lease_expires_at") == expected_previous
+            and parse_time(r["renewed_at"]) < parse_time(r["previous_lease_expires_at"])
+            and parse_time(r["new_lease_expires_at"]) > parse_time(r["previous_lease_expires_at"])
+        )
+    except (ValidationFailure, KeyError):
+        ok = False
+    return [] if ok else [error("CX-SV-007", "LEASE_SEQUENCE_OR_TIME")]
+
+
+def rule_008(b: Bundle) -> list[str]:
+    r = b.record("claim_renewal")
+    claim = b.record("claim")
+    terminal = b.record("terminal_control_result", None)
+    valid_claims = b.context.get("valid_claims", [])
+    try:
+        effective_expiry = parse_time(b.context.get("claim_effective_lease_expires_at", claim["lease_expires_at"]))
+        renewed = parse_time(r["renewed_at"])
+    except (ValidationFailure, KeyError):
+        return [error("CX-SV-008", "CLAIM_EXPIRED_OR_FENCED")]
+    higher = any(
+        isinstance(x, dict)
+        and x.get("claim_generation", -1) > claim.get("claim_generation", -1)
+        and x.get("valid", True)
+        for x in valid_claims
+    )
+    ok = terminal is None and renewed < effective_expiry and not higher
+    return [] if ok else [error("CX-SV-008", "CLAIM_EXPIRED_OR_FENCED")]
+
+
+def rule_009(b: Bundle) -> list[str]:
+    claim = b.record("claim")
+    pred = b.record("predecessor_claim")
+    terminal = b.record("terminal_control_result", None)
+    try:
+        decision = parse_time(b.context["decision_time"])
+        expiry = parse_time(b.context["predecessor_effective_lease_expires_at"])
+        grace = int(b.context.get("takeover_grace_seconds", 120))
+    except (ValidationFailure, KeyError, TypeError, ValueError):
+        return [error("CX-SV-009", "BEFORE_GRACE_OR_BAD_GENERATION")]
+    ok = (
+        terminal is None
+        and claim.get("claim_generation") == pred.get("claim_generation", -2) + 1
+        and claim.get("predecessor_claim_id") == pred.get("claim_id")
+        and decision >= expiry + timedelta(seconds=grace)
+    )
+    return [] if ok else [error("CX-SV-009", "BEFORE_GRACE_OR_BAD_GENERATION")]
+
+
+def rule_010(b: Bundle) -> list[str]:
+    for alias in b.context.get("authorization_aliases", ["claim", "resource_lock"]):
+        record = b.record(alias, None)
+        if record is None:
+            continue
+        auth = record.get("takeover_authorization")
+        if record.get("takeover_basis") == "OWNER_DIRECTED":
+            if not isinstance(auth, dict) or not re.fullmatch(r"[0-9a-f]{64}", str(auth.get("sha256", ""))):
+                return [error("CX-SV-010", "AUTHORIZATION_REQUIRED")]
+        elif auth is not None:
+            return [error("CX-SV-010", "UNEXPECTED_AUTHORIZATION")]
+    return []
+
+
+def _resource_ok(record: dict[str, Any]) -> bool:
+    key = record.get("resource_key")
+    generation = record.get("lock_generation")
+    if not isinstance(key, str) or not isinstance(generation, int):
+        return False
+    digest = sha256_bytes(key.encode("utf-8"))
+    return (
+        record.get("resource_key_sha256") == digest
+        and record.get("lock_id") == f"AT-LOCK-{digest[:16]}-G{generation}"
+        and record.get("lock_head_path") == f"docs/coordination/control_exchange/resource_lock_heads/{digest}.json"
+    )
+
+
+def rule_011(b: Bundle) -> list[str]:
+    aliases = b.context.get("resource_record_aliases", ["resource_lock"])
+    for alias in aliases:
+        record = b.record(alias, None)
+        if record is not None and not _resource_ok(record):
+            return [error("CX-SV-011", "RESOURCE_DERIVATION_MISMATCH")]
+    return []
+
+
+def rule_012(b: Bundle) -> list[str]:
+    head = b.record("resource_lock_head")
+    state = head.get("effective_state")
+    if state == "HELD":
+        ok = head.get("effective_lease_expires_at") is not None and head.get("release") is None
+    elif state == "RELEASED":
+        ok = head.get("effective_lease_expires_at") is None and isinstance(head.get("release"), dict)
+    else:
+        ok = False
+    return [] if ok else [error("CX-SV-012", "LOCK_HEAD_STATE_MATRIX")]
+
+
+def rule_013(b: Bundle) -> list[str]:
+    lock = b.record("resource_lock")
+    renewal = b.record("resource_lock_renewal")
+    prior = b.record("prior_resource_lock_renewal", None)
+    head = b.record("resource_lock_head")
+    acq = lock.get("acquisition", {})
+    expected_sequence = 1 if prior is None else prior.get("renewal_sequence", -1) + 1
+    expected_previous = acq.get("initial_lease_expires_at") if prior is None else prior.get("new_lease_expires_at")
+    same = all(
+        renewal.get(field) == expected
+        for field, expected in (
+            ("resource_key_sha256", lock.get("resource_key_sha256")),
+            ("lock_id", lock.get("lock_id")),
+            ("lock_generation", lock.get("lock_generation")),
+            ("claim_id", acq.get("claim_id")),
+            ("transaction_id", acq.get("transaction_id")),
+            ("renewed_by_router_id", acq.get("owner_router_id")),
+            ("renewed_by_chat_id", acq.get("owner_chat_id")),
+            ("renewed_by_conversation_name", acq.get("owner_conversation_name")),
+        )
+    )
+    try:
+        time_ok = (
+            renewal.get("renewal_sequence") == expected_sequence
+            and renewal.get("previous_lease_expires_at") == expected_previous
+            and parse_time(renewal["renewed_at"]) < parse_time(renewal["previous_lease_expires_at"])
+            and parse_time(renewal["new_lease_expires_at"]) > parse_time(renewal["previous_lease_expires_at"])
+        )
+    except (ValidationFailure, KeyError):
+        time_ok = False
+    head_ref = head.get("latest_renewal")
+    head_ok = (
+        isinstance(head_ref, dict)
+        and head_ref.get("lock_renewal_id") == renewal.get("lock_renewal_id")
+        and head_ref.get("sha256") == b.raw_sha("resource_lock_renewal")
+        and head.get("effective_lease_expires_at") == renewal.get("new_lease_expires_at")
+    )
+    return [] if same and time_ok and head_ok else [error("CX-SV-013", "LOCK_RENEWAL_BINDING")]
+
+
+def rule_014(b: Bundle) -> list[str]:
+    lock = b.record("resource_lock")
+    pred = b.record("predecessor_resource_lock", None)
+    pred_head = b.record("predecessor_resource_lock_head", None)
+    generation = lock.get("lock_generation")
+    if generation == 0:

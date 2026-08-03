@@ -1,0 +1,200 @@
+        ok = pred is None and lock.get("predecessor_lock") is None and lock.get("takeover_basis") == "INITIAL_ACQUISITION"
+    else:
+        ref = lock.get("predecessor_lock")
+        ok = (
+            isinstance(pred, dict)
+            and isinstance(pred_head, dict)
+            and generation == pred.get("lock_generation", -2) + 1
+            and isinstance(ref, dict)
+            and ref.get("lock_id") == pred.get("lock_id")
+            and ref.get("sha256") == b.raw_sha("predecessor_resource_lock")
+        )
+        basis = lock.get("takeover_basis")
+        if basis == "RELEASED_REACQUISITION":
+            ok = ok and pred_head.get("effective_state") == "RELEASED"
+        elif basis == "EXPIRED_AFTER_GRACE":
+            try:
+                decision = parse_time(lock["acquisition"]["acquired_at"])
+                expiry = parse_time(pred_head["effective_lease_expires_at"])
+                ok = ok and pred_head.get("effective_state") == "HELD" and decision >= expiry + timedelta(seconds=120)
+            except (ValidationFailure, KeyError):
+                ok = False
+        elif basis == "OWNER_DIRECTED":
+            ok = ok and isinstance(lock.get("takeover_authorization"), dict)
+        else:
+            ok = False
+    return [] if ok else [error("CX-SV-014", "LOCK_TAKEOVER_INVALID")]
+
+
+def rule_015(b: Bundle) -> list[str]:
+    result = b.record("control_result")
+    claim = b.record("highest_valid_claim")
+    fields = (
+        ("work_receipt_id", "work_receipt_id"),
+        ("work_receipt_content_sha256", "work_receipt_content_sha256"),
+        ("claim_id", "claim_id"),
+        ("claim_generation", "claim_generation"),
+        ("router_id", "owner_router_id"),
+        ("chat_id", "owner_chat_id"),
+    )
+    return [] if all(result.get(a) == claim.get(c) for a, c in fields) else [error("CX-SV-015", "STALE_OR_MISMATCHED_CLAIM")]
+
+
+def rule_016(b: Bundle) -> list[str]:
+    result = b.record("control_result")
+    claim = b.record("highest_valid_claim")
+    locks = b.context.get("valid_resource_locks", [])
+    expected = {
+        (x.get("resource_key_sha256"), x.get("lock_id"), x.get("lock_generation"))
+        for x in locks
+        if isinstance(x, dict)
+    }
+    actual = {
+        (x.get("resource_key_sha256"), x.get("lock_id"), x.get("lock_generation"))
+        for x in result.get("resource_locks", [])
+        if isinstance(x, dict)
+    }
+    claim_ok = result.get("claim_id") == claim.get("claim_id")
+    return [] if expected == actual and claim_ok else [error("CX-SV-016", "RESULT_LOCK_BINDING")]
+
+
+def rule_017(b: Bundle) -> list[str]:
+    mapping = b.record("legacy_compatibility_mapping")
+    carrier_alias = b.context.get("legacy_carrier_alias", "legacy_carrier")
+    expected = b.raw_sha(carrier_alias)
+    ok = mapping.get("legacy_content_sha256") == expected and mapping.get("carrier_sha256") == expected
+    return [] if ok else [error("CX-SV-017", "LEGACY_HASH_MISMATCH")]
+
+
+def rule_018(b: Bundle) -> list[str]:
+    candidate = b.record("candidate_cutover_marker", None)
+    if candidate is not None and candidate.get("state") != "NOT_EFFECTIVE":
+        return [error("CX-SV-018", "CANDIDATE_MARKER_NOT_INACTIVE")]
+    marker = b.record("effective_cutover_marker")
+    aliases = b.context.get("source_aliases", [])
+    for alias in aliases:
+        ref = marker.get(alias)
+        source = b.record(alias, None)
+        if not isinstance(ref, dict) or source is None:
+            return [error("CX-SV-018", "SOURCE_REFERENCE_MISSING")]
+        if ref.get("sha256") != b.raw_sha(alias):
+            return [error("CX-SV-018", "SOURCE_HASH_MISMATCH")]
+        if not re.fullmatch(r"[0-9a-f]{40}", str(ref.get("commit", ""))):
+            return [error("CX-SV-018", "SOURCE_COMMIT_MISSING")]
+    groups = b.context.get("same_commit_groups", [])
+    for group in groups:
+        commits = {marker.get(alias, {}).get("commit") for alias in group}
+        if len(commits) != 1:
+            return [error("CX-SV-018", "MIXED_SOURCE_COMMITS")]
+    return []
+
+
+def rule_019(b: Bundle) -> list[str]:
+    marker = b.record("effective_cutover_marker")
+    aliases = b.context.get("cutover_ack_aliases", [])
+    required = {"AT-ROUTER-001", "AT-ROUTER-002", "AT-ROUTER-003"}
+    seen: set[str] = set()
+    bindings = b.context.get("ack_binding_pairs", [])
+    for alias in aliases:
+        ack = b.record(alias)
+        ref = next((x for x in marker.get("cutover_acknowledgements", []) if x.get("alias") == alias), None)
+        if not isinstance(ref, dict) or ref.get("sha256") != b.raw_sha(alias):
+            return [error("CX-SV-019", "ACK_RAW_HASH_MISMATCH")]
+        router = ack.get("router_id")
+        if ack.get("status") != "ACKNOWLEDGED" or router in seen:
+            return [error("CX-SV-019", "DUPLICATE_OR_NONACKNOWLEDGED_ROUTER")]
+        seen.add(router)
+        for ack_path, marker_path in bindings:
+            if get_path(ack, ack_path, None) != get_path(marker, marker_path, None):
+                return [error("CX-SV-019", "ACK_BINDING_MISMATCH")]
+    return [] if seen == required else [error("CX-SV-019", "MISSING_ROUTER_ACKNOWLEDGEMENT")]
+
+
+def rule_020(b: Bundle) -> list[str]:
+    g = b.record("global_lock_disposition")
+    state = g.get("observed_state")
+    disposition = g.get("disposition")
+    blocks = g.get("blocks_cutover")
+    owner = g.get("owner")
+    recovery = g.get("recovery_evidence")
+    post = g.get("post_recovery_state")
+    if state in {"ABSENT", "FREE"}:
+        ok = disposition == "FREE_VERIFIED" and blocks is False and owner is None and recovery is None and post is None
+    elif state == "HELD_ACTIVE":
+        ok = disposition == "HELD_BLOCKS_CUTOVER" and blocks is True and isinstance(owner, dict)
+    elif state == "HELD_EXPIRED":
+        ok = (
+            (disposition == "HELD_BLOCKS_CUTOVER" and blocks is True)
+            or (
+                disposition == "STALE_RECOVERED"
+                and blocks is False
+                and isinstance(recovery, dict)
+                and post in {"ABSENT", "FREE"}
+            )
+        )
+    elif state == "CONFLICT":
+        ok = disposition == "CONFLICT_BLOCKS_CUTOVER" and blocks is True
+    else:
+        ok = False
+    inventory = b.record("legacy_inventory", None)
+    if inventory is not None:
+        ok = ok and inventory.get("item_count") == len(inventory.get("items", []))
+    if b.context.get("require_cutover_permitted") is True and blocks is True:
+        ok = False
+    return [] if ok else [error("CX-SV-020", "GLOBAL_LOCK_BINDING_OR_STATE")]
+
+
+def _barrier_common(b: Bundle, marker_alias: str, transaction_type: str) -> bool:
+    marker = b.record(marker_alias)
+    evidence = b.record("barrier_transaction_evidence")
+    if evidence.get("transaction_type") != transaction_type:
+        return False
+    if marker.get("barrier_evidence_sha256") != b.raw_sha("barrier_transaction_evidence"):
+        return False
+    if evidence.get("barrier_resource_key") != "GLOBAL::CONTROL_PLANE::CUTOVER":
+        return False
+    if evidence.get("publisher_router_id") != marker.get("publisher_router_id"):
+        return False
+    if evidence.get("publisher_chat_id") != marker.get("publisher_chat_id"):
+        return False
+    locks = evidence.get("component_locks", [])
+    reads = evidence.get("readbacks", [])
+    if evidence.get("component_lock_count") != len(locks) or evidence.get("readback_count") != len(reads):
+        return False
+    lock_keys = {x.get("resource_key") for x in locks}
+    read_keys = {x.get("resource_key") for x in reads}
+    if lock_keys != read_keys:
+        return False
+    for lock in locks:
+        if lock.get("owner_router_id") != evidence.get("publisher_router_id"):
+            return False
+        if lock.get("owner_chat_id") != evidence.get("publisher_chat_id"):
+            return False
+        if lock.get("claim_id") != evidence.get("claim_id"):
+            return False
+        if lock.get("transaction_id") != evidence.get("transaction_id"):
+            return False
+        if lock.get("state") != "HELD":
+            return False
+    for read in reads:
+        if read.get("matched") is not True or read.get("expected_sha256") != read.get("observed_sha256"):
+            return False
+    if marker.get("claim_id") != evidence.get("claim_id"):
+        return False
+    if marker.get("transaction_id") != evidence.get("transaction_id"):
+        return False
+    try:
+        effective = parse_time(marker["effective_at"])
+        if parse_time(evidence["published_at"]) > effective:
+            return False
+        if parse_time(evidence["barrier_lease_expires_at"]) < effective:
+            return False
+        for lock in locks:
+            if parse_time(lock["lease_expires_at"]) < effective:
+                return False
+    except (ValidationFailure, KeyError):
+        return False
+    return True
+
+
+def rule_021(b: Bundle) -> list[str]:
