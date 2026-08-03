@@ -1,4 +1,4 @@
-name: Generation-10 exact private-successor acknowledgement public fallback
+name: Generation-10 true private-successor acknowledgement public fallback
 
 on:
   pull_request:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  validate-exact-private-successor-path:
+  validate-true-private-successor-path:
     runs-on: windows-2025
     steps:
       - name: Check out exact diagnostic head
@@ -36,7 +36,7 @@ jobs:
           "python=$(python --version)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsBuildNumber, OsArchitecture | Format-List | Out-String | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
-      - name: Verify unchanged exact production blobs
+      - name: Verify unchanged exact production and retained-test blobs
         shell: pwsh
         run: |
           $expected = [ordered]@{
@@ -54,6 +54,12 @@ jobs:
             }
             "exact_blob $($entry.Key)=$actual" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           }
+          $bootstrapPath = "repro/g9_exact_production_ack/animal_tracking/__init__.py"
+          $bootstrapBlob = (git hash-object -- $bootstrapPath).Trim()
+          if ($bootstrapBlob -ne "c402a67e28af94a2b8515822669fab7c8e8f677e") {
+            throw "Unpatched bootstrap blob mismatch: observed $bootstrapBlob"
+          }
+          "unpatched_bootstrap_blob=$bootstrapBlob" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
       - name: Materialize and verify exact private successor logging blob
         shell: pwsh
@@ -79,11 +85,37 @@ jobs:
           "retained_logging_blob=$retainedBlob" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           "exact_private_successor_logging_blob=$successorBlob" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
 
+      - name: Verify runtime uses the exact Gen10 implementation
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "$env:GITHUB_WORKSPACE\repro\g9_exact_production_ack"
+          @'
+          import inspect
+          from pathlib import Path
+          from animal_tracking import logging_config
+
+          function = logging_config._apply_windows_acl
+          source_file = Path(inspect.getsourcefile(function) or "").resolve()
+          expected_file = Path("repro/g9_exact_production_ack/animal_tracking/logging_config.py").resolve()
+          source = inspect.getsource(function)
+          if function.__module__ != "animal_tracking.logging_config":
+              raise SystemExit(f"Runtime function was replaced by {function.__module__}")
+          if source_file != expected_file:
+              raise SystemExit(f"Runtime function came from {source_file}, expected {expected_file}")
+          if ".GetOwner(" not in source or "Owner.Translate" in source:
+              raise SystemExit("Runtime function does not contain the exact Gen10 owner verification")
+          print(f"runtime_function_module={function.__module__}")
+          print(f"runtime_function_file={source_file}")
+          print("runtime_compatibility_patch_installed=false")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw "Runtime exact-source verification failed" }
+          "runtime_compatibility_patch_installed=false" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
       - name: Install exact retained test dependency
         shell: pwsh
         run: python -m pip install --disable-pip-version-check --no-input pytest==9.1.1
 
-      - name: Run exact private successor production acknowledgement test
+      - name: Run unchanged retained acknowledgement test against true Gen10 source
         shell: pwsh
         run: |
           $env:PYTHONPATH = "$env:GITHUB_WORKSPACE\repro\g9_exact_production_ack"
