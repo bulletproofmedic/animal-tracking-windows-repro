@@ -44,7 +44,10 @@ def load_corpus(path: Path) -> dict[str, Any]:
         if core.sha256_bytes(raw) != entry.get("sha256"):
             raise core.ValidationFailure(f"shard SHA-256 mismatch: {relative}")
         shard = json.loads(raw.decode("utf-8"))
-        if shard.get("record_type") != "ANIMAL_TRACKING_CONTROL_EXCHANGE_SEMANTIC_CONFORMANCE_SHARD":
+        if (
+            shard.get("record_type")
+            != "ANIMAL_TRACKING_CONTROL_EXCHANGE_SEMANTIC_CONFORMANCE_SHARD"
+        ):
             raise core.ValidationFailure(f"wrong shard record_type: {relative}")
         if shard.get("validator_version") != entry.get("validator_version"):
             raise core.ValidationFailure(f"shard version mismatch: {relative}")

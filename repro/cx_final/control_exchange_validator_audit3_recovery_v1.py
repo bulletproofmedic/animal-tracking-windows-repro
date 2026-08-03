@@ -34,14 +34,19 @@ def _recovery_error(b: Any) -> str | None:
     if not isinstance(sequence, int) or sequence < 0:
         return "RECOVERY_SEQUENCE"
     expected_id = f"AT-RCP-{work_receipt_id}-C{sequence}"
-    expected_path = f"docs/coordination/control_exchange/recovery/{work_receipt_id}/C{sequence}.json"
+    expected_path = (
+        f"docs/coordination/control_exchange/recovery/{work_receipt_id}/C{sequence}.json"
+    )
     if checkpoint.get("checkpoint_id") != expected_id:
         return "RECOVERY_CHECKPOINT_ID"
     if checkpoint.get("recovery_head_path") != (
         f"docs/coordination/control_exchange/recovery_heads/{work_receipt_id}.json"
     ):
         return "RECOVERY_HEAD_PATH"
-    if any(items != sorted(items) or len(items) != len(set(items)) for items in (universe, successful, remaining, uncertain)):
+    if any(
+        items != sorted(items) or len(items) != len(set(items))
+        for items in (universe, successful, remaining, uncertain)
+    ):
         return "RECOVERY_SET_ORDER_OR_DUPLICATE"
     sets = [set(successful), set(remaining), set(uncertain)]
     if any(sets[left] & sets[right] for left in range(3) for right in range(left + 1, 3)):
@@ -64,7 +69,9 @@ def _recovery_error(b: Any) -> str | None:
             return "RECOVERY_PREDECESSOR"
         if predecessor_reference.get("checkpoint_id") != predecessor.get("checkpoint_id"):
             return "RECOVERY_PREDECESSOR"
-        if predecessor_reference.get("checkpoint_sequence") != predecessor.get("checkpoint_sequence"):
+        if predecessor_reference.get("checkpoint_sequence") != predecessor.get(
+            "checkpoint_sequence"
+        ):
             return "RECOVERY_PREDECESSOR"
         if predecessor_reference.get("sha256") != b.raw_sha("predecessor_recovery_checkpoint"):
             return "RECOVERY_PREDECESSOR"
@@ -99,19 +106,33 @@ def _recovery_error(b: Any) -> str | None:
     action_items = next_action.get("item_ids", [])
     if state == "NOT_STARTED":
         ok = not successful and not uncertain and remaining == universe and terminal is None
-        ok = ok and action == "EXECUTE_REMAINING" and bool(action_items) and set(action_items) <= set(remaining)
+        ok = (
+            ok
+            and action == "EXECUTE_REMAINING"
+            and bool(action_items)
+            and set(action_items) <= set(remaining)
+        )
     elif state == "IN_PROGRESS":
         ok = bool(uncertain) and terminal is None and action == "RESOLVE_UNCERTAIN"
         ok = ok and action_items == uncertain
     elif state == "PARTIALLY_COMMITTED":
         ok = bool(successful) and bool(remaining) and not uncertain and terminal is None
-        ok = ok and action == "EXECUTE_REMAINING" and bool(action_items) and set(action_items) <= set(remaining)
+        ok = (
+            ok
+            and action == "EXECUTE_REMAINING"
+            and bool(action_items)
+            and set(action_items) <= set(remaining)
+        )
     elif state == "RESULT_PENDING":
         ok = successful == universe and not remaining and not uncertain and terminal is None
         ok = ok and action == "PUBLISH_RESULT" and not action_items
     elif state == "COMMITTED":
         ok = successful == universe and not remaining and not uncertain
-        ok = ok and isinstance(terminal, dict) and terminal.get("outcome") in {"COMPLETED", "NO_ACTION_REQUIRED"}
+        ok = (
+            ok
+            and isinstance(terminal, dict)
+            and terminal.get("outcome") in {"COMPLETED", "NO_ACTION_REQUIRED"}
+        )
         ok = ok and action == "NONE" and not action_items
     elif state in {"BLOCKED", "REJECTED"}:
         ok = isinstance(terminal, dict) and terminal.get("outcome") == state
@@ -172,4 +193,3 @@ def rule_024(b: Any) -> list[str]:
         if recovery_error is not None:
             return [error("CX-SV-024", recovery_error)]
     return []
-

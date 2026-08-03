@@ -61,6 +61,7 @@ def resolve_pointer(root: Any, pointer: str) -> Any:
 def error(rule: str, code: str) -> str:
     return f"{rule}:{code}"
 
+
 def _validate_time_ref(b: Any, binding: dict[str, Any]) -> bool:
     observation_alias = binding["observation_alias"]
     source_alias = binding["source_alias"]
@@ -169,7 +170,9 @@ def _transaction_binding_ok(
     binding = b.record("control_transaction_binding")
     reference = marker.get("control_transaction_binding")
     transaction_id = marker.get("control_transaction_id")
-    operation_id = marker.get("marker_id") if operation_type == "CUTOVER" else marker.get("rollback_id")
+    operation_id = (
+        marker.get("marker_id") if operation_type == "CUTOVER" else marker.get("rollback_id")
+    )
     if not isinstance(reference, dict):
         return False
     if reference.get("record_type") != binding.get("record_type"):
@@ -195,7 +198,9 @@ def _transaction_binding_ok(
     member_keys = {(item.get("role"), item.get("path"), item.get("sha256")) for item in members}
     if len(member_keys) != len(members):
         return False
-    lock_keys = {(item.get("resource_key"), item.get("lock_id"), item.get("head_sha256")) for item in locks}
+    lock_keys = {
+        (item.get("resource_key"), item.get("lock_id"), item.get("head_sha256")) for item in locks
+    }
     if len(lock_keys) != len(locks):
         return False
     for item in locks:
@@ -222,7 +227,11 @@ def _transaction_binding_ok(
         )
         if expected not in member_keys:
             return False
-        matching = [item for item in members if (item.get("role"), item.get("path"), item.get("sha256")) == expected]
+        matching = [
+            item
+            for item in members
+            if (item.get("role"), item.get("path"), item.get("sha256")) == expected
+        ]
         if len(matching) != 1:
             return False
         if matching[0].get("record_type") != record.get("record_type"):
@@ -241,7 +250,9 @@ def _barrier_common(
     marker = b.record(marker_alias)
     evidence = b.record("barrier_transaction_evidence")
     transaction_id = marker.get("control_transaction_id")
-    operation_id = marker.get("marker_id") if operation_type == "CUTOVER" else marker.get("rollback_id")
+    operation_id = (
+        marker.get("marker_id") if operation_type == "CUTOVER" else marker.get("rollback_id")
+    )
     reference = marker.get("barrier_transaction_evidence")
     if not isinstance(reference, dict):
         return False
@@ -264,7 +275,10 @@ def _barrier_common(
     if evidence.get("published_by_chat_id") != marker.get("published_by_chat_id"):
         return False
     barrier = evidence.get("barrier_lock")
-    if not isinstance(barrier, dict) or barrier.get("resource_key") != "GLOBAL::CONTROL_PLANE::CUTOVER":
+    if (
+        not isinstance(barrier, dict)
+        or barrier.get("resource_key") != "GLOBAL::CONTROL_PLANE::CUTOVER"
+    ):
         return False
     locks = evidence.get("component_locks", [])
     readbacks = evidence.get("readbacks", [])
@@ -340,4 +354,3 @@ def rule_022(b: Any) -> list[str]:
     if not _barrier_common(b, "rollback_marker", "ROLLBACK", aliases):
         return [error("CX-SV-022", "ROLLBACK_TRANSACTION_INVALID")]
     return []
-
