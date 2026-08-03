@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "purpose": "SANITIZED_GENERATION_10_OWNER_CLEANUP_LAUNCHER_REPRODUCER",
+  "private_repository": "bulletproofmedic/animal-tracking",
+  "private_main_parent": "877ab6f30e06ccb85c3490984acf550f1f3b7080",
+  "private_diagnostic_head": "481fbdf0986e66e6cb85d2375f231ef2cf08d6ef",
+  "private_diagnostic_tree": "5027c4696062006d0b48acc1e5c10d493fc8e28c",
+  "adopted_generation_10_target": "43058e9b1295ffe0dcec2c907870462ee127fd93",
+  "hybrid_launcher_blob": "871c3ec362e362388b8ce6368f8dcec6e1a64a0a",
+  "source_launcher_blob": "f77f3a692519f8a18ef128be7304cb3ffd9b5442",
+  "current_main_launcher_blob": "ae218aa8ea2553d4d025f10b4df6f9251e19e949",
+  "synthetic_data_only": true,
+  "private_git_history_copied": false,
+  "replaces_private_validation": false
+}
