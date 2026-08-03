@@ -7,7 +7,7 @@ $outputDir = Join-Path $stage "output"
 Remove-Item -Recurse -Force $inputDir, $outputDir -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $inputDir, $outputDir | Out-Null
 
-$assemble = @'
+$prepare = @'
 from __future__ import annotations
 
 import hashlib
@@ -15,6 +15,7 @@ from pathlib import Path
 
 stage = Path("repro/ruff_pr83")
 input_dir = stage / "input"
+exact_dir = stage / "exact"
 
 
 def git_blob_sha(data: bytes) -> str:
@@ -22,50 +23,38 @@ def git_blob_sha(data: bytes) -> str:
     return hashlib.sha1(header + data).hexdigest()
 
 
-def normalize_to_expected(data: bytes, expected: str, label: str) -> bytes:
-    candidates = [data]
-    if data.endswith(b"\n"):
-        candidates.append(data[:-1])
-    else:
-        candidates.append(data + b"\n")
-    for candidate in candidates:
-        if git_blob_sha(candidate) == expected:
-            return candidate
-    raise SystemExit(
-        f"{label} assembly mismatch: observed {git_blob_sha(data)}, expected {expected}"
-    )
+def copy_verified(name: str, expected_blob: str) -> None:
+    raw = (exact_dir / name).read_bytes()
+    observed = git_blob_sha(raw)
+    if observed != expected_blob:
+        raise SystemExit(f"{name} blob mismatch: observed {observed}, expected {expected_blob}")
+    (input_dir / name).write_bytes(raw)
+    print(f"{name} input SHA-256: {hashlib.sha256(raw).hexdigest()}")
 
-parts = sorted(stage.glob("control_exchange_validator_v1.py.part*"))
-if len(parts) != 4:
-    raise SystemExit(f"Expected four evaluator fragments, found {len(parts)}")
 
-evaluator = normalize_to_expected(
-    b"".join(path.read_bytes() for path in parts),
+copy_verified(
+    "control_exchange_validator_v1.py",
     "21eb882e34454699e13bd16593d324be0b6201bb",
-    "evaluator",
 )
-runner = normalize_to_expected(
-    (stage / "control_exchange_validator_runner_v1.py").read_bytes(),
+copy_verified(
+    "control_exchange_validator_runner_v1.py",
     "602999346fca212042ab7cf45d5db0f1c51badc5",
-    "runner",
 )
-
-(input_dir / "control_exchange_validator_v1.py").write_bytes(evaluator)
-(input_dir / "control_exchange_validator_runner_v1.py").write_bytes(runner)
 (input_dir / "pyproject.toml").write_bytes((stage / "pyproject.toml").read_bytes())
-
-print(f"Evaluator input SHA-256: {hashlib.sha256(evaluator).hexdigest()}")
-print(f"Runner input SHA-256: {hashlib.sha256(runner).hexdigest()}")
 '@
 
-$assemble | python -
+$prepare | python -
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 python -m pip install --disable-pip-version-check --no-input ruff==0.15.22
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Push-Location $inputDir
 try {
     python -m ruff check --fix . && python -m ruff format .
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     python -m ruff check . && python -m ruff format --check .
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 } finally {
     Pop-Location
 }
@@ -106,3 +95,4 @@ print(json.dumps(records, indent=2, sort_keys=True))
 '@
 
 $record | python -
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
