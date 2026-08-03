@@ -1,0 +1,18 @@
+{
+  "repository": "bulletproofmedic/animal-tracking",
+  "source_base_commit": "877ab6f30e06ccb85c3490984acf550f1f3b7080",
+  "source_commit": "05f8ff277ea84be769b99b52e4cb60751429ac46",
+  "control_commit": "7fa6dedfbd1bd7f41c68c0895816c2018424dd97",
+  "manifest_commit": "b8001b6eaa5497063776978c01a2051e1c73618e",
+  "retained_target": "6e5649c68080c27d407d20f17fc8632cfe332666",
+  "stable_main": "534851a70d6707d0b1b7409207cf22b19ea06cda",
+  "candidate_commit": "4c45883f4ea4c00c9ed670ce9d46bbcfd19a017e",
+  "candidate_tree": "62969daf508d5e0ea29fe4decfdb47c464f28819",
+  "source_delta_path_count": 59,
+  "control_delta_path_count": 4,
+  "stable_main_coordination_path_count": 5,
+  "private_ci_run": 30860926077,
+  "private_ci_initial_job": 91842506620,
+  "private_ci_retry_job": 91842583793,
+  "private_ci_result": "RUNNER_STARTUP_FAILURE_ZERO_STEPS_AFTER_SINGLE_RETRY"
+}
