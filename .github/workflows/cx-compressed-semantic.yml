@@ -1,0 +1,237 @@
+name: Compressed Control Exchange Semantic Validation
+
+on:
+  workflow_dispatch:
+  push:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cx-compressed-semantic-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/repro/cx-semantic-final-20260803'
+    runs-on: windows-2025
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out exact sanitized commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Verify exact sanitized commit
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ((git rev-parse HEAD).Trim() -ne $env:EXPECTED_SHA) {
+            throw "Exact target checkout mismatch."
+          }
+
+      - name: Set up parity Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13.14"
+
+      - name: Test and enforce public payload boundary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m unittest discover -s tests -v
+          python scripts/check_public_payload.py
+
+      - name: Prepare exact compressed semantic package
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $stage = "repro/cx_final"
+          $output = Join-Path $stage "output"
+          Remove-Item -Recurse -Force $output -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $output | Out-Null
+
+          @'
+          from __future__ import annotations
+
+          import base64
+          import hashlib
+          import json
+          import os
+          import subprocess
+          import urllib.request
+          import zlib
+          from pathlib import Path
+
+          root = Path("repro/cx_final")
+          tracked = subprocess.check_output(
+              ["git", "ls-tree", "-r", "--name-only", "HEAD", "repro/cx_final"],
+              text=True,
+          ).splitlines()
+          for git_path in tracked:
+              relative = Path(git_path).relative_to(root)
+              if relative.parts[0] == "output":
+                  continue
+              raw = subprocess.check_output(["git", "show", f"HEAD:{git_path}"])
+              target = root / relative
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_bytes(raw)
+
+          def fetch_blob(blob_sha: str, target: Path, expected_sha256: str) -> None:
+              url = f"https://api.github.com/repos/{os.environ['REPOSITORY']}/git/blobs/{blob_sha}"
+              request = urllib.request.Request(
+                  url,
+                  headers={
+                      "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                      "User-Agent": "animal-tracking-public-reproducer",
+                  },
+              )
+              with urllib.request.urlopen(request) as response:
+                  payload = json.load(response)
+              raw = base64.b64decode(payload["content"], validate=True)
+              observed = hashlib.sha256(raw).hexdigest()
+              if observed != expected_sha256:
+                  raise SystemExit(
+                      f"Blob {blob_sha} SHA-256 mismatch: observed {observed}, expected {expected_sha256}"
+                  )
+              target.write_bytes(raw)
+
+          fetch_blob(
+              "d25d40aa79bae3d7d61faa6e95028f87c5fb8deb",
+              root / "control_exchange_validator_runner_v1.py",
+              "8cb8ae65b473eb66dffd15bedb6c40dc53f79dd88a6cd4ad33ff6411d546e496",
+          )
+          fetch_blob(
+              "fe40a3034c618a1216212721b736a218e40c52bd",
+              root / "control_exchange_validator_conformance_v1.json",
+              "7ce1d00eae1ab272e1bcbbaa5251ccf0a1175c7e953502b40ab6a28fed2d65c2",
+          )
+
+          expected = {
+              "rules_005_008.json": (1647, "eb474895dabc06397a0faed47b4187da17aa22f10fde494187d612c93b6f1def"),
+              "rules_021.json": (2545, "4ef3e9d2c9bbbf2160a0ab7d07332728e56c8de5a1ff559b632d26ef154691b3"),
+              "rules_022.json": (2302, "f4f6d6481a9a09262a978981bc62171dbc42367fba10454ab0810f98aa1a52af"),
+              "rules_023_024.json": (1397, "d8a9456ba8cbe5aa7ab7106dbf5e0625d18d2af945f502999526e661190fc6a1"),
+          }
+          for name, (expected_size, expected_sha) in expected.items():
+              source = root / "conformance" / name
+              compressed = zlib.compress(source.read_bytes(), level=9)
+              observed_sha = hashlib.sha256(compressed).hexdigest()
+              if len(compressed) != expected_size or observed_sha != expected_sha:
+                  raise SystemExit(
+                      f"Compressed shard mismatch for {name}: size={len(compressed)} sha256={observed_sha}"
+                  )
+              destination = source.with_suffix(source.suffix + ".zlib")
+              destination.write_bytes(compressed)
+              print(f"Prepared {destination}: {len(compressed)} bytes {observed_sha}")
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run Ruff remediation and verification
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m pip install --disable-pip-version-check --no-input ruff==0.15.22
+          Push-Location repro/cx_final
+          try {
+            python -m ruff check --fix . && python -m ruff format .
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            python -m ruff check . && python -m ruff format --check .
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+            Pop-Location
+          }
+
+      - name: Execute complete 80-case corpus
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Push-Location repro/cx_final
+          try {
+            python control_exchange_validator_runner_v1.py control_exchange_validator_conformance_v1.json > output/conformance_result.json
+            $corpusExit = $LASTEXITCODE
+            Get-Content output/conformance_result.json
+            if ($corpusExit -ne 0) { exit $corpusExit }
+
+            @'
+            from __future__ import annotations
+
+            import hashlib
+            import json
+            from pathlib import Path
+
+            result = json.loads(Path("output/conformance_result.json").read_text(encoding="utf-8"))
+            if result.get("case_count") != 80 or result.get("passed") != 80 or result.get("failed") != 0:
+                raise SystemExit(f"Unexpected conformance result: {result}")
+            index = json.loads(Path("control_exchange_validator_conformance_v1.json").read_text(encoding="utf-8"))
+            paths = [
+                Path("control_exchange_validator_v1.py"),
+                Path("control_exchange_validator_audit3_v1.py"),
+                Path("control_exchange_validator_audit3_time_transaction_v1.py"),
+                Path("control_exchange_validator_audit3_recovery_v1.py"),
+                Path("control_exchange_validator_runner_v1.py"),
+                Path("control_exchange_validator_conformance_v1.json"),
+                *(Path(entry["path"]) for entry in index["shards"]),
+            ]
+            files = {}
+            for path in paths:
+                raw = path.read_bytes()
+                files[path.as_posix()] = {
+                    "size_bytes": len(raw),
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                }
+            manifest = {
+                "record_type": "ANIMAL_TRACKING_CONTROL_EXCHANGE_PUBLIC_SEMANTIC_VALIDATION_RESULT",
+                "validator_version": "1.3.0",
+                "ruff_version": "0.15.22",
+                "case_count": 80,
+                "passed": 80,
+                "failed": 0,
+                "files": files,
+            }
+            Path("output/identity_manifest.json").write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            print(json.dumps(manifest, indent=2, sort_keys=True))
+            '@ | python -
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+            Pop-Location
+          }
+
+      - name: Upload exact validated compressed package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: control-exchange-semantic-v1.3.0-compressed
+          path: repro/cx_final
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+
+      - name: Publish validated compressed carriers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          git add -- repro/cx_final/control_exchange_validator_runner_v1.py
+          git add -- repro/cx_final/control_exchange_validator_conformance_v1.json
+          git add -- repro/cx_final/conformance/*.zlib
+          git add -- repro/cx_final/output
+          $changes = git status --porcelain -- repro/cx_final
+          if (-not $changes) {
+            Write-Host "Validated compressed output already published."
+            exit 0
+          }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Publish compressed Control Exchange semantic validation [skip ci]"
+          git push origin HEAD:repro/cx-semantic-final-20260803
