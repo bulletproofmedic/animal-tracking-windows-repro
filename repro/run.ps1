@@ -5,6 +5,30 @@ $output = Join-Path $stage "output"
 Remove-Item -Recurse -Force $output -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $output | Out-Null
 
+$restore = @'
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+root = Path("repro/cx_final")
+tracked = subprocess.check_output(
+    ["git", "ls-tree", "-r", "--name-only", "HEAD", "repro/cx_final"],
+    text=True,
+).splitlines()
+for git_path in tracked:
+    relative = Path(git_path).relative_to(root)
+    if relative.parts[0] == "output":
+        continue
+    raw = subprocess.check_output(["git", "show", f"HEAD:{git_path}"])
+    target = root / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(raw)
+print(f"Restored {len(tracked)} package files from exact Git blobs.")
+'@
+$restore | python -
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 python -m pip install --disable-pip-version-check --no-input ruff==0.15.22
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -16,7 +40,9 @@ try {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     python control_exchange_validator_runner_v1.py control_exchange_validator_conformance_v1.json > output/conformance_result.json
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    $corpusExit = $LASTEXITCODE
+    Get-Content output/conformance_result.json
+    if ($corpusExit -ne 0) { exit $corpusExit }
 
     $record = @'
 from __future__ import annotations
