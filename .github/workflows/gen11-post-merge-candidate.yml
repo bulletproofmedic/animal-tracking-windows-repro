@@ -1,0 +1,39 @@
+name: Generation 11 post-merge candidate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-candidate-topology:
+    runs-on: windows-2025
+    steps:
+      - name: Check out bounded reproducer
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+      - name: Set up CPython 3.13.14
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13.14"
+      - name: Verify environment and payload boundary
+        shell: pwsh
+        run: |
+          python --version
+          git --version
+          $files = git diff --name-only origin/main...HEAD
+          $unexpected = $files | Where-Object {
+            $_ -ne ".github/workflows/gen11-post-merge-candidate.yml" -and
+            -not $_.StartsWith("repro/gen11_post_merge_candidate/")
+          }
+          if ($unexpected) {
+            Write-Error "Unexpected public payload paths: $($unexpected -join ', ')"
+            exit 1
+          }
+      - name: Compile sanitized model
+        run: python -m py_compile repro/gen11_post_merge_candidate/test_candidate_model.py
+      - name: Run candidate topology and mutations
+        run: python -m unittest discover -s repro/gen11_post_merge_candidate -p "test_*.py" -v
