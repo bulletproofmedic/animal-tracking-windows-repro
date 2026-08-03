@@ -18,7 +18,6 @@ jobs:
   bootstrap:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
-
     steps:
       - name: Check out exact diagnostic commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -44,13 +43,11 @@ jobs:
           python -m venv .venv
           source .venv/bin/activate
           python -m pip install --upgrade pip
-
           mkdir -p bundle/wheelhouse bundle/models/easyocr bundle/models/paddle
 
           python -m pip install "paddlepaddle==3.3.1" "paddleocr==3.7.0"
           python -m pip freeze --all | sort > bundle/paddle_environment_lock.txt
           python -m pip download --dest bundle/wheelhouse -r bundle/paddle_environment_lock.txt
-
           python -m pip download --dest bundle/wheelhouse --no-deps \
             "easyocr==1.7.2" python-bidi pyclipper ninja
 
@@ -70,10 +67,12 @@ jobs:
 
           probe = Path("/tmp/paddle_probe.png")
           image = Image.new("RGB", (640, 160), "white")
-          draw = ImageDraw.Draw(image)
-          draw.text((20, 50), "SPYPOINT 02/08/2026 02:18 65F 18C COYOTE", fill="black")
+          ImageDraw.Draw(image).text(
+              (20, 50),
+              "SPYPOINT 02/08/2026 02:18 65F 18C COYOTE",
+              fill="black",
+          )
           image.save(probe)
-
           engine = PaddleOCR(
               text_detection_model_name="PP-OCRv6_small_det",
               text_recognition_model_name="PP-OCRv6_small_rec",
@@ -108,7 +107,6 @@ jobs:
                   "bytes": len(data),
                   "sha256": hashlib.sha256(data).hexdigest(),
               })
-
           manifest = {
               "record_type": "ANIMAL_TRACKING_OCR_CANDIDATE_PUBLIC_BOOTSTRAP_BUNDLE",
               "python": sys.version,
@@ -118,8 +116,8 @@ jobs:
               ).splitlines(),
               "candidate_scope": {
                   "tesseract": "provided by target runtime",
-                  "paddleocr": "3.7.0 with PaddlePaddle 3.3.1 and PP-OCRv6 small detector/recognizer",
-                  "easyocr": "1.7.2 with CRAFT and English generation-2 recognizer",
+                  "paddleocr": "3.7.0 / PaddlePaddle 3.3.1 / PP-OCRv6 small",
+                  "easyocr": "1.7.2 / CRAFT / English generation 2",
                   "formats": ["JPEG", "PNG"],
               },
               "files": files,
@@ -128,9 +126,7 @@ jobs:
               json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
           )
           PY
-
           du -sh bundle
-          find bundle/models -type f -printf '%p %s bytes\n' | sort
 
       - name: Upload OCR bootstrap bundle
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
@@ -149,11 +145,14 @@ jobs:
           JOB_STATUS: ${{ job.status }}
         run: |
           set -euo pipefail
-          case "$JOB_STATUS" in
-            success) STATE=success ;;
-            cancelled) STATE=error ;;
-            *) STATE=failure ;;
-          esac
+          if [ "$JOB_STATUS" = "success" ]; then
+            STATE=success
+          elif [ "$JOB_STATUS" = "cancelled" ]; then
+            STATE=error
+          else
+            STATE=failure
+          fi
+          export STATE
           python - <<'PY' > /tmp/status.json
           import json
           import os
@@ -161,7 +160,10 @@ jobs:
           print(json.dumps({
               "state": os.environ["STATE"],
               "context": "ocr-candidate-bootstrap",
-              "description": f"run_id={os.environ['GITHUB_RUN_ID']} status={os.environ['JOB_STATUS']}",
+              "description": (
+                  f"run_id={os.environ['GITHUB_RUN_ID']} "
+                  f"status={os.environ['JOB_STATUS']}"
+              ),
               "target_url": (
                   f"{os.environ['GITHUB_SERVER_URL']}/"
                   f"{os.environ['GITHUB_REPOSITORY']}/actions/runs/"
@@ -176,7 +178,3 @@ jobs:
             --header "X-GitHub-Api-Version: 2022-11-28" \
             "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
             --data-binary @/tmp/status.json
-        env:
-          GH_TOKEN: ${{ github.token }}
-          JOB_STATUS: ${{ job.status }}
-          STATE: ${{ job.status == 'success' && 'success' || 'failure' }}
