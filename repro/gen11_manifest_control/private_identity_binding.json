@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0",
+  "purpose": "SANITIZED_GENERATION_11_MANIFEST_CONTROL_REPRODUCER",
+  "private_repository": "bulletproofmedic/animal-tracking",
+  "private_source_base": "877ab6f30e06ccb85c3490984acf550f1f3b7080",
+  "private_source_commit": "05f8ff277ea84be769b99b52e4cb60751429ac46",
+  "private_source_tree": "0a7804c3779859173e55eb492c93542a9675840c",
+  "private_source_delta_count": 59,
+  "private_control_commit": "7fa6dedfbd1bd7f41c68c0895816c2018424dd97",
+  "private_control_tree": "4f77dbda1d8d284c384e8f60d380b53d8ba1ce9e",
+  "private_manifest_commit": "b8001b6eaa5497063776978c01a2051e1c73618e",
+  "private_manifest_tree": "3d3eaea31b146d252d55d723efc626e3dc45c113",
+  "private_manifest_blob": "f8a3866659d611052f04b991d67116c5ff32ec69",
+  "private_manifest_sha256": "ede9a8077e1cad25476f55cb974d0aef0bde158463bce3a9dd7fbc38be4365dc",
+  "private_retained_target": "6e5649c68080c27d407d20f17fc8632cfe332666",
+  "private_core_blob": "52b245a3dfb19d8a415008e2bc96fe84286a61b2",
+  "private_generator_blob": "9911ff5dd8adb0d3c633274c87aa13f73bcb90cc",
+  "private_validator_blob": "0f01b4eba4f3c661a18f39621c9ecbc501e9a553",
+  "synthetic_git_history_only": true,
+  "private_repository_content_copied": false,
+  "replaces_private_validation": false
+}
