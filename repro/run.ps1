@@ -11,11 +11,11 @@ $prepare = @'
 from __future__ import annotations
 
 import hashlib
+import subprocess
 from pathlib import Path
 
 stage = Path("repro/ruff_pr83")
 input_dir = stage / "input"
-exact_dir = stage / "exact"
 
 
 def git_blob_sha(data: bytes) -> str:
@@ -23,8 +23,13 @@ def git_blob_sha(data: bytes) -> str:
     return hashlib.sha1(header + data).hexdigest()
 
 
+def read_exact_git_blob(name: str) -> bytes:
+    git_path = f"repro/ruff_pr83/exact/{name}"
+    return subprocess.check_output(["git", "show", f"HEAD:{git_path}"])
+
+
 def copy_verified(name: str, expected_blob: str) -> None:
-    raw = (exact_dir / name).read_bytes()
+    raw = read_exact_git_blob(name)
     observed = git_blob_sha(raw)
     if observed != expected_blob:
         raise SystemExit(f"{name} blob mismatch: observed {observed}, expected {expected_blob}")
