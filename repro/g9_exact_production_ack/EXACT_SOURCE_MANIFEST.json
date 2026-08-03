@@ -1,0 +1,69 @@
+{
+  "schema_version": "2.0",
+  "record_type": "ANIMAL_TRACKING_R1_SECURITY_LOGGING_G10_PUBLIC_EXACT_SUCCESSOR_MANIFEST",
+  "source_repository": "bulletproofmedic/animal-tracking",
+  "source_retained_commit": "1bc484ecc689620aa3d6f7bdde3719d57c639607",
+  "source_retained_tree": "caae5dd7e3ee34306321695fa590e090778369df",
+  "source_successor_branch": "fix/r1-security-logging-generation-10-source",
+  "source_successor_commit": "147b49aaf6549239b09dbd87212a7344ba5b374a",
+  "source_successor_tree": "829c7e4b8ce9f812fd910a5bc577b331cf535eed",
+  "public_repository": "bulletproofmedic/animal-tracking-windows-repro",
+  "public_branch": "repro/r1-security-logging-g9-exact-production-ack",
+  "objective": "Materialize the exact one-line private successor logging source, verify its Git blob identity, and run the unchanged exact production acknowledgement test on Windows 2025.",
+  "runtime_materialized_exact_file": {
+    "source_path": "src/animal_tracking/logging_config.py",
+    "public_input_path": "repro/g9_exact_production_ack/animal_tracking/logging_config.py",
+    "retained_input_git_blob_sha": "4a527fca84a5dfe2305b589598e47d47fcfe6236",
+    "successor_git_blob_sha": "3f16826aa03503cc1c1e11ee417380c26af49ef6",
+    "replacement_count": 1,
+    "old_line": "$owner = $verified.Owner.Translate([System.Security.Principal.SecurityIdentifier]).Value",
+    "new_line": "$owner = $verified.GetOwner([System.Security.Principal.SecurityIdentifier]).Value"
+  },
+  "unchanged_exact_files": [
+    {
+      "source_path": "src/animal_tracking/security/events.py",
+      "public_path": "repro/g9_exact_production_ack/animal_tracking/security/events.py",
+      "git_blob_sha": "adcab482c1488fbaa7a1971d6ce7b1a8c9930936"
+    },
+    {
+      "source_path": "src/animal_tracking/_security_event_ack_guard.py",
+      "public_path": "repro/g9_exact_production_ack/animal_tracking/_security_event_ack_guard.py",
+      "git_blob_sha": "c7919944ae33fe093d047e525a858b8654a2aacd"
+    },
+    {
+      "source_path": "src/animal_tracking/_windows_handle_security.py",
+      "public_path": "repro/g9_exact_production_ack/animal_tracking/_windows_handle_security.py",
+      "git_blob_sha": "5476cfda8c2e4e2d4424a5aca5d6bb5e7e8692bd"
+    },
+    {
+      "source_path": "src/animal_tracking/_windows_acl_guard.py",
+      "public_path": "repro/g9_exact_production_ack/animal_tracking/_windows_acl_guard.py",
+      "git_blob_sha": "3d55537e15c583bcfb6ac0f962bc8ff2ca1f13cb"
+    },
+    {
+      "source_path": "tests/unit/test_security_event_acknowledgement_windows.py",
+      "public_path": "repro/g9_exact_production_ack/tests/test_security_event_acknowledgement_windows.py",
+      "git_blob_sha": "00441f7098b8fd52308e5642c6ae8e0273d34071"
+    }
+  ],
+  "sanitization_boundary": {
+    "private_git_history_copied": false,
+    "private_branch_copied": false,
+    "credentials_or_secrets_copied": false,
+    "private_configuration_copied": false,
+    "production_data_copied": false,
+    "coordinates_maps_media_databases_or_logs_copied": false,
+    "synthetic_test_data_only": true
+  },
+  "authority_boundary": {
+    "public_validation_is_current_fallback_evidence": true,
+    "required_private_runner_validation_replaced": false,
+    "independent_finding_revalidation_performed_by_this_workflow": false,
+    "audit_finding_closed_by_this_workflow": false,
+    "merge_authorized": false,
+    "owner_operational_use_authorized": false,
+    "release_readiness_established": false,
+    "production_release_authorized": false
+  },
+  "scope_reminder": "Do not exceed your scope."
+}
