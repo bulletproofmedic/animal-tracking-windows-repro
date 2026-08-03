@@ -1,76 +1,145 @@
-name: Public Windows Reproducer
+name: OCR Candidate Bootstrap Diagnostic
 
 on:
   workflow_dispatch:
   push:
-  pull_request:
+    branches:
+      - diagnostic/ocr-candidate-bootstrap-20260803
 
 permissions:
   contents: read
 
 concurrency:
-  group: public-windows-repro-${{ github.ref }}
+  group: ocr-candidate-bootstrap-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  validate:
-    runs-on: windows-2025
-    timeout-minutes: 20
+  bootstrap:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
 
     steps:
-      - name: Check out exact sanitized commit
+      - name: Check out exact diagnostic commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 1
 
-      - name: Verify exact sanitized commit
-        shell: pwsh
-        env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact diagnostic commit
+        shell: bash
         run: |
-          $ErrorActionPreference = "Stop"
-          if ((git rev-parse HEAD).Trim() -ne $env:EXPECTED_SHA) {
-            throw "Exact target checkout mismatch."
-          }
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
 
-      - name: Set up parity Python
+      - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.13.14"
 
-      - name: Test public payload guard
-        shell: pwsh
+      - name: Build public OCR bootstrap bundle
+        shell: bash
         run: |
-          $ErrorActionPreference = "Stop"
-          python -m unittest discover -s tests -v
+          set -euo pipefail
+          python -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade pip
 
-      - name: Enforce public payload boundary
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          python scripts/check_public_payload.py
+          mkdir -p bundle/wheelhouse bundle/models/easyocr bundle/models/paddle
 
-      - name: Record hosted Windows environment
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          python --version
-          git --version
-          $os = Get-CimInstance Win32_OperatingSystem
-          [PSCustomObject]@{
-            Caption = $os.Caption
-            Version = $os.Version
-            BuildNumber = $os.BuildNumber
-            Architecture = $os.OSArchitecture
-          } | Format-List
+          # Install the exact Paddle candidate and resolve its complete Python dependency set.
+          python -m pip install "paddlepaddle==3.3.1" "paddleocr==3.7.0"
+          python -m pip freeze --all | sort > bundle/paddle_environment_lock.txt
+          python -m pip download --dest bundle/wheelhouse -r bundle/paddle_environment_lock.txt
 
-      - name: Run staged reproducer
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          if (Test-Path "repro/run.ps1") {
-            & "repro/run.ps1"
-          } else {
-            Write-Host "No reproducer is staged. Windows runner smoke test passed."
+          # EasyOCR itself is pure Python; the target runtime already supplies Torch, torchvision,
+          # OpenCV, Pillow, NumPy, SciPy, scikit-image, PyYAML, Shapely and tqdm.
+          python -m pip download --dest bundle/wheelhouse --no-deps \
+            "easyocr==1.7.2" python-bidi pyclipper ninja
+
+          curl --fail --location --retry 3 \
+            --output /tmp/craft_mlt_25k.zip \
+            https://github.com/JaidedAI/EasyOCR/releases/download/pre-v1.1.6/craft_mlt_25k.zip
+          curl --fail --location --retry 3 \
+            --output /tmp/english_g2.zip \
+            https://github.com/JaidedAI/EasyOCR/releases/download/v1.3/english_g2.zip
+          unzip -j /tmp/craft_mlt_25k.zip -d bundle/models/easyocr
+          unzip -j /tmp/english_g2.zip -d bundle/models/easyocr
+
+          # Force acquisition of the exact local PP-OCRv6 small detector and recognizer.
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageDraw
+          from paddleocr import PaddleOCR
+
+          probe = Path("/tmp/paddle_probe.png")
+          image = Image.new("RGB", (640, 160), "white")
+          draw = ImageDraw.Draw(image)
+          draw.text((20, 50), "SPYPOINT 02/08/2026 02:18 65F 18C COYOTE", fill="black")
+          image.save(probe)
+
+          engine = PaddleOCR(
+              text_detection_model_name="PP-OCRv6_small_det",
+              text_recognition_model_name="PP-OCRv6_small_rec",
+              use_doc_orientation_classify=False,
+              use_doc_unwarping=False,
+              use_textline_orientation=False,
+              device="cpu",
+          )
+          list(engine.predict(str(probe)))
+          PY
+
+          for candidate in "$HOME/.paddlex" "$HOME/.paddleocr"; do
+            if [ -d "$candidate" ]; then
+              cp -a "$candidate" bundle/models/paddle/
+            fi
+          done
+
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import platform
+          import subprocess
+          import sys
+
+          root = Path("bundle")
+          files = []
+          for path in sorted(p for p in root.rglob("*") if p.is_file()):
+              data = path.read_bytes()
+              files.append({
+                  "relative_path": path.relative_to(root).as_posix(),
+                  "bytes": len(data),
+                  "sha256": hashlib.sha256(data).hexdigest(),
+              })
+
+          manifest = {
+              "record_type": "ANIMAL_TRACKING_OCR_CANDIDATE_PUBLIC_BOOTSTRAP_BUNDLE",
+              "python": sys.version,
+              "platform": platform.platform(),
+              "pip_freeze": subprocess.check_output(
+                  [sys.executable, "-m", "pip", "freeze", "--all"], text=True
+              ).splitlines(),
+              "candidate_scope": {
+                  "tesseract": "provided by target runtime",
+                  "paddleocr": "3.7.0 with PaddlePaddle 3.3.1 and PP-OCRv6 small detector/recognizer",
+                  "easyocr": "1.7.2 with CRAFT and English generation-2 recognizer",
+                  "formats": ["JPEG", "PNG"],
+              },
+              "files": files,
           }
+          (root / "bootstrap_manifest.json").write_text(
+              json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+
+          du -sh bundle
+          find bundle/models -type f -printf '%p %s bytes\n' | sort
+
+      - name: Upload OCR bootstrap bundle
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: animal-tracking-ocr-candidate-bootstrap
+          path: bundle/
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
