@@ -1,0 +1,15 @@
+{
+  "command": "python -m ruff check --fix . && python -m ruff format .",
+  "files": {
+    "control_exchange_validator_runner_v1.py": {
+      "sha256": "cfdb71ebad430ed5f1a686df49c1a402f59546248fe34dc0b2be6009d9fff2da",
+      "size_bytes": 3867
+    },
+    "control_exchange_validator_v1.py": {
+      "sha256": "1bca4f433aea51ed4ab018b6bbe42d8857568ac3efd7c62fa5f33b3724bbf5f7",
+      "size_bytes": 32195
+    }
+  },
+  "ruff_version": "0.15.22",
+  "verification": "python -m ruff check . && python -m ruff format --check ."
+}
