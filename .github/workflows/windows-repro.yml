@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 concurrency:
   group: ocr-candidate-bootstrap-${{ github.ref }}
@@ -46,13 +47,10 @@ jobs:
 
           mkdir -p bundle/wheelhouse bundle/models/easyocr bundle/models/paddle
 
-          # Install the exact Paddle candidate and resolve its complete Python dependency set.
           python -m pip install "paddlepaddle==3.3.1" "paddleocr==3.7.0"
           python -m pip freeze --all | sort > bundle/paddle_environment_lock.txt
           python -m pip download --dest bundle/wheelhouse -r bundle/paddle_environment_lock.txt
 
-          # EasyOCR itself is pure Python; the target runtime already supplies Torch, torchvision,
-          # OpenCV, Pillow, NumPy, SciPy, scikit-image, PyYAML, Shapely and tqdm.
           python -m pip download --dest bundle/wheelhouse --no-deps \
             "easyocr==1.7.2" python-bidi pyclipper ninja
 
@@ -65,7 +63,6 @@ jobs:
           unzip -j /tmp/craft_mlt_25k.zip -d bundle/models/easyocr
           unzip -j /tmp/english_g2.zip -d bundle/models/easyocr
 
-          # Force acquisition of the exact local PP-OCRv6 small detector and recognizer.
           python - <<'PY'
           from pathlib import Path
           from PIL import Image, ImageDraw
@@ -143,3 +140,43 @@ jobs:
           if-no-files-found: error
           retention-days: 3
           compression-level: 0
+
+      - name: Publish diagnostic run locator
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          case "$JOB_STATUS" in
+            success) STATE=success ;;
+            cancelled) STATE=error ;;
+            *) STATE=failure ;;
+          esac
+          python - <<'PY' > /tmp/status.json
+          import json
+          import os
+
+          print(json.dumps({
+              "state": os.environ["STATE"],
+              "context": "ocr-candidate-bootstrap",
+              "description": f"run_id={os.environ['GITHUB_RUN_ID']} status={os.environ['JOB_STATUS']}",
+              "target_url": (
+                  f"{os.environ['GITHUB_SERVER_URL']}/"
+                  f"{os.environ['GITHUB_REPOSITORY']}/actions/runs/"
+                  f"{os.environ['GITHUB_RUN_ID']}"
+              ),
+          }))
+          PY
+          curl --fail --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            --data-binary @/tmp/status.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+          STATE: ${{ job.status == 'success' && 'success' || 'failure' }}
