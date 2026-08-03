@@ -6,7 +6,7 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: public-windows-repro-${{ github.ref }}
@@ -74,3 +74,18 @@ jobs:
           } else {
             Write-Host "No reproducer is staged. Windows runner smoke test passed."
           }
+
+      - name: Publish exact formatted output
+        if: github.ref == 'refs/heads/repro/ruff-pr83-20260803'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          git add -- repro/ruff_pr83/output
+          $changes = git status --porcelain -- repro/ruff_pr83/output
+          if (-not $changes) {
+            throw "Ruff reproducer produced no publishable output."
+          }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Publish PR83 Ruff output [skip ci]"
+          git push origin HEAD:repro/ruff-pr83-20260803
