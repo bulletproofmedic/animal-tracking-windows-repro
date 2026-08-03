@@ -1,103 +1,67 @@
 $ErrorActionPreference = "Stop"
 
-$stage = Join-Path $PSScriptRoot "ruff_pr83"
-$inputDir = Join-Path $stage "input"
-$outputDir = Join-Path $stage "output"
-
-Remove-Item -Recurse -Force $inputDir, $outputDir -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force $inputDir, $outputDir | Out-Null
-
-$prepare = @'
-from __future__ import annotations
-
-import hashlib
-import subprocess
-from pathlib import Path
-
-stage = Path("repro/ruff_pr83")
-input_dir = stage / "input"
-
-
-def git_blob_sha(data: bytes) -> str:
-    header = f"blob {len(data)}\0".encode("ascii")
-    return hashlib.sha1(header + data).hexdigest()
-
-
-def read_exact_git_blob(name: str) -> bytes:
-    git_path = f"repro/ruff_pr83/exact/{name}"
-    return subprocess.check_output(["git", "show", f"HEAD:{git_path}"])
-
-
-def copy_verified(name: str, expected_blob: str) -> None:
-    raw = read_exact_git_blob(name)
-    observed = git_blob_sha(raw)
-    if observed != expected_blob:
-        raise SystemExit(f"{name} blob mismatch: observed {observed}, expected {expected_blob}")
-    (input_dir / name).write_bytes(raw)
-    print(f"{name} input SHA-256: {hashlib.sha256(raw).hexdigest()}")
-
-
-copy_verified(
-    "control_exchange_validator_v1.py",
-    "21eb882e34454699e13bd16593d324be0b6201bb",
-)
-copy_verified(
-    "control_exchange_validator_runner_v1.py",
-    "602999346fca212042ab7cf45d5db0f1c51badc5",
-)
-(input_dir / "pyproject.toml").write_bytes((stage / "pyproject.toml").read_bytes())
-'@
-
-$prepare | python -
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$stage = Join-Path $PSScriptRoot "cx_final"
+$output = Join-Path $stage "output"
+Remove-Item -Recurse -Force $output -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force $output | Out-Null
 
 python -m pip install --disable-pip-version-check --no-input ruff==0.15.22
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Push-Location $inputDir
+Push-Location $stage
 try {
     python -m ruff check --fix . && python -m ruff format .
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     python -m ruff check . && python -m ruff format --check .
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-} finally {
-    Pop-Location
-}
 
-Copy-Item (Join-Path $inputDir "control_exchange_validator_v1.py") $outputDir
-Copy-Item (Join-Path $inputDir "control_exchange_validator_runner_v1.py") $outputDir
+    python control_exchange_validator_runner_v1.py control_exchange_validator_conformance_v1.json > output/conformance_result.json
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-$record = @'
+    $record = @'
 from __future__ import annotations
 
 import hashlib
 import json
 from pathlib import Path
 
-output = Path("repro/ruff_pr83/output")
-records = {}
-for path in sorted(output.glob("*.py")):
+root = Path(".")
+result = json.loads((root / "output/conformance_result.json").read_text(encoding="utf-8"))
+if result.get("case_count") != 80 or result.get("passed") != 80 or result.get("failed") != 0:
+    raise SystemExit(f"Unexpected conformance result: {result.get('passed')}/{result.get('case_count')}, failed={result.get('failed')}")
+
+paths = [
+    Path("control_exchange_validator_v1.py"),
+    Path("control_exchange_validator_audit3_v1.py"),
+    Path("control_exchange_validator_audit3_time_transaction_v1.py"),
+    Path("control_exchange_validator_audit3_recovery_v1.py"),
+    Path("control_exchange_validator_runner_v1.py"),
+    Path("control_exchange_validator_conformance_v1.json"),
+    *sorted(Path("conformance").glob("*.json")),
+]
+files = {}
+for path in paths:
     raw = path.read_bytes()
-    records[path.name] = {
+    files[path.as_posix()] = {
         "size_bytes": len(raw),
         "sha256": hashlib.sha256(raw).hexdigest(),
     }
-(output / "ruff_result.json").write_text(
-    json.dumps(
-        {
-            "ruff_version": "0.15.22",
-            "command": "python -m ruff check --fix . && python -m ruff format .",
-            "verification": "python -m ruff check . && python -m ruff format --check .",
-            "files": records,
-        },
-        indent=2,
-        sort_keys=True,
-    )
-    + "\n",
-    encoding="utf-8",
+manifest = {
+    "record_type": "ANIMAL_TRACKING_CONTROL_EXCHANGE_PUBLIC_SEMANTIC_VALIDATION_RESULT",
+    "validator_version": "1.3.0",
+    "ruff_version": "0.15.22",
+    "case_count": 80,
+    "passed": 80,
+    "failed": 0,
+    "files": files,
+}
+(root / "output/identity_manifest.json").write_text(
+    json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
 )
-print(json.dumps(records, indent=2, sort_keys=True))
+print(json.dumps(manifest, indent=2, sort_keys=True))
 '@
-
-$record | python -
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    $record | python -
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+} finally {
+    Pop-Location
+}

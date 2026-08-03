@@ -69,23 +69,19 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          if (Test-Path "repro/run.ps1") {
-            & "repro/run.ps1"
-          } else {
-            Write-Host "No reproducer is staged. Windows runner smoke test passed."
-          }
+          & "repro/run.ps1"
 
-      - name: Publish exact formatted output
-        if: github.ref == 'refs/heads/repro/ruff-pr83-20260803'
+      - name: Publish exact final semantic output
+        if: github.ref == 'refs/heads/repro/cx-semantic-final-20260803'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          git add -- repro/ruff_pr83/output
-          $changes = git status --porcelain -- repro/ruff_pr83/output
+          git add -- repro/cx_final
+          $changes = git status --porcelain -- repro/cx_final
           if (-not $changes) {
-            throw "Ruff reproducer produced no publishable output."
+            throw "Semantic reproducer produced no publishable output."
           }
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Publish PR83 Ruff output [skip ci]"
-          git push origin HEAD:repro/ruff-pr83-20260803
+          git commit -m "Publish final Control Exchange semantic validation [skip ci]"
+          git push origin HEAD:repro/cx-semantic-final-20260803
