@@ -17,15 +17,28 @@ _INTERVAL_TABLES = (
 )
 
 
+def _invalid_end_condition() -> str:
+    return """
+(
+    NEW.valid_to_upper IS NOT NULL
+    AND NEW.valid_to_lower IS NULL
+)
+OR
+(
+    COALESCE(NEW.valid_to_upper, NEW.valid_to_lower) IS NOT NULL
+    AND COALESCE(NEW.valid_to_upper, NEW.valid_to_lower) < NEW.valid_from_lower
+)
+""".strip()
+
+
 def _insert_guard(table: str, prefix: str) -> str:
     return f"""
 CREATE TRIGGER {prefix}_insert_guard
 BEFORE INSERT ON {table}
 FOR EACH ROW
-WHEN NEW.valid_to_lower IS NOT NULL
-    AND COALESCE(NEW.valid_to_upper, NEW.valid_to_lower) < NEW.valid_from_lower
+WHEN {_invalid_end_condition()}
 BEGIN
-    SELECT RAISE(ABORT, 'interval end precedes start');
+    SELECT RAISE(ABORT, 'interval end bounds are invalid');
 END;
 """.strip()
 
@@ -35,10 +48,9 @@ def _update_guard(table: str, prefix: str) -> str:
 CREATE TRIGGER {prefix}_update_guard
 BEFORE UPDATE OF valid_from_lower, valid_to_lower, valid_to_upper ON {table}
 FOR EACH ROW
-WHEN NEW.valid_to_lower IS NOT NULL
-    AND COALESCE(NEW.valid_to_upper, NEW.valid_to_lower) < NEW.valid_from_lower
+WHEN {_invalid_end_condition()}
 BEGIN
-    SELECT RAISE(ABORT, 'interval end precedes start');
+    SELECT RAISE(ABORT, 'interval end bounds are invalid');
 END;
 """.strip()
 
