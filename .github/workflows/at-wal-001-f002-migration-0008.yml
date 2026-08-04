@@ -26,10 +26,10 @@ jobs:
         run: |
           $migration = (git hash-object f002_repro/0008_interval_chronology_guards.py).Trim()
           $tests = (git hash-object f002_repro/test_migration_0008_sql.py).Trim()
-          if ($migration -ne "8dda06ce835a8cb3af6a3092d1e25da8ad07909e") {
+          if ($migration -ne "1fd467b3c51c6e585c3fa1e63d71eee282b3c636") {
             throw "Migration payload mismatch: $migration"
           }
-          if ($tests -ne "e31084498321a9f41223ac32c97f101fe185de8b") {
+          if ($tests -ne "79b3419dfe598bab96017eae559a8a3452c61583") {
             throw "Test payload mismatch: $tests"
           }
       - name: Install exact runtime dependency
