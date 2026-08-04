@@ -85,7 +85,9 @@ class Migration0008Tests(unittest.TestCase):
     def test_invalid_insert_rejected_for_every_governed_interval_table(self) -> None:
         for table in TABLES:
             with self.subTest(table=table):
-                with self.assertRaisesRegex(sqlite3.IntegrityError, "interval end precedes start"):
+                with self.assertRaisesRegex(
+                    sqlite3.IntegrityError, "interval end bounds are invalid"
+                ):
                     insert_interval(
                         self.connection,
                         table,
@@ -102,7 +104,9 @@ class Migration0008Tests(unittest.TestCase):
             start="2026-08-04T12:00:00Z",
             end_lower="2026-08-04T13:00:00Z",
         )
-        with self.assertRaisesRegex(sqlite3.IntegrityError, "interval end precedes start"):
+        with self.assertRaisesRegex(
+            sqlite3.IntegrityError, "interval end bounds are invalid"
+        ):
             self.connection.execute(
                 """
                 UPDATE persistence_operationalinterval
@@ -110,6 +114,60 @@ class Migration0008Tests(unittest.TestCase):
                 WHERE id = 'row-1'
                 """
             )
+
+    def test_upper_only_insert_rejected_for_every_governed_interval_table(self) -> None:
+        for table in TABLES:
+            with self.subTest(table=table):
+                with self.assertRaisesRegex(
+                    sqlite3.IntegrityError, "interval end bounds are invalid"
+                ):
+                    insert_interval(
+                        self.connection,
+                        table,
+                        row_id=f"upper-only-{table}",
+                        start="2026-08-04T12:00:00Z",
+                        end_lower=None,
+                        end_upper="2026-08-04T11:59:59Z",
+                    )
+
+    def test_upper_only_update_rejected_for_every_governed_interval_table(self) -> None:
+        for table in TABLES:
+            with self.subTest(table=table):
+                row_id = f"upper-only-update-{table}"
+                insert_interval(
+                    self.connection,
+                    table,
+                    row_id=row_id,
+                    start="2026-08-04T12:00:00Z",
+                    end_lower="2026-08-04T13:00:00Z",
+                )
+                with self.assertRaisesRegex(
+                    sqlite3.IntegrityError, "interval end bounds are invalid"
+                ):
+                    self.connection.execute(
+                        f"""
+                        UPDATE {table}
+                        SET valid_to_lower = NULL,
+                            valid_to_upper = '2026-08-04T11:59:59Z'
+                        WHERE id = ?
+                        """,
+                        (row_id,),
+                    )
+
+    def test_upper_only_end_after_start_is_still_rejected(self) -> None:
+        for table in TABLES:
+            with self.subTest(table=table):
+                with self.assertRaisesRegex(
+                    sqlite3.IntegrityError, "interval end bounds are invalid"
+                ):
+                    insert_interval(
+                        self.connection,
+                        table,
+                        row_id=f"upper-only-after-start-{table}",
+                        start="2026-08-04T12:00:00Z",
+                        end_lower=None,
+                        end_upper="2026-08-04T13:00:00Z",
+                    )
 
     def test_latest_possible_bounded_end_is_enforced(self) -> None:
         insert_interval(
@@ -135,7 +193,9 @@ class Migration0008Tests(unittest.TestCase):
         )
         self.connection.commit()
 
-        with self.assertRaisesRegex(sqlite3.IntegrityError, "interval end precedes start"):
+        with self.assertRaisesRegex(
+            sqlite3.IntegrityError, "interval end bounds are invalid"
+        ):
             with self.connection:
                 self.connection.execute(
                     "UPDATE persistence_operationalinterval SET status = 'SUPERSEDED' WHERE id = 'predecessor'"
@@ -145,7 +205,8 @@ class Migration0008Tests(unittest.TestCase):
                     "persistence_operationalinterval",
                     row_id="invalid-successor",
                     start="2026-08-04T12:00:00Z",
-                    end_lower="2026-08-04T11:59:59Z",
+                    end_lower=None,
+                    end_upper="2026-08-04T11:59:59Z",
                     supersedes_id="predecessor",
                 )
 
@@ -234,7 +295,8 @@ class Migration0008Tests(unittest.TestCase):
             "persistence_operationalinterval",
             row_id="rollback-allows-pre-migration-shape",
             start="2026-08-04T12:00:00Z",
-            end_lower="2026-08-04T11:59:59Z",
+            end_lower=None,
+            end_upper="2026-08-04T11:59:59Z",
         )
         count = self.connection.execute(
             "SELECT COUNT(*) FROM persistence_operationalinterval"
