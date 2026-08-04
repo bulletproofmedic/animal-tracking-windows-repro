@@ -1,0 +1,37 @@
+name: PR24 AUD004 Provenance Lifecycle
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  provenance-lifecycle:
+    runs-on: windows-2025
+    steps:
+      - name: Check out exact public diagnostic head
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - name: Set up Python 3.13.14
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13.14"
+
+      - name: Run sanitized migration lifecycle model
+        shell: pwsh
+        run: |
+          python repro/pr24_aud004_provenance_lifecycle.py
+
+      - name: Verify exact public head
+        shell: pwsh
+        run: |
+          $actual = git rev-parse HEAD
+          $expected = "${{ github.event.pull_request.head.sha }}"
+          if ($actual -ne $expected) {
+            throw "Public diagnostic head mismatch: expected $expected, got $actual"
+          }
+          Write-Output "PUBLIC_HEAD=$actual"
