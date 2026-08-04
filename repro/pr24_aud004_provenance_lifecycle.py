@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
+from contextlib import closing
 from pathlib import Path
 
 PRIVATE_PR24_HEAD = "9aa4c6906cd04f7483d9bed4aa125f66e5a2d690"
@@ -274,7 +275,7 @@ def verify_proof_immutable(connection: sqlite3.Connection) -> None:
 
 def run_clean_install(root: Path) -> None:
     path = root / "clean.sqlite3"
-    with connect(path) as connection:
+    with closing(connect(path)) as connection:
         create_schema_0006(connection)
         apply_schema_0007(connection)
         verify_0007_present(connection)
@@ -290,7 +291,7 @@ def run_clean_install(root: Path) -> None:
 
 def run_upgrade_rollback_reapply(root: Path) -> None:
     path = root / "upgrade.sqlite3"
-    with connect(path) as connection:
+    with closing(connect(path)) as connection:
         create_schema_0006(connection)
         legacy_id = seed(connection, "legacy")
         connection.execute(
