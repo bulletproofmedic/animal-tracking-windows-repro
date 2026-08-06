@@ -1,0 +1,34 @@
+name: PR115 Generation 11 audit remediation
+
+on:
+  pull_request:
+    paths:
+      - "repro/pr115_g11_audit_remediation.py"
+      - ".github/workflows/pr115-g11-audit-remediation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-remediation-model:
+    runs-on: windows-2025
+    steps:
+      - name: Check out exact public head
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+      - name: Set up Python 3.13.14
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13.14"
+      - name: Record environment
+        shell: pwsh
+        run: |
+          python --version
+          git --version
+          Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsBuildNumber
+      - name: Compile sanitized model
+        run: python -m py_compile repro/pr115_g11_audit_remediation.py
+      - name: Run corrected Windows seam tests
+        run: python -m unittest -v repro.pr115_g11_audit_remediation
