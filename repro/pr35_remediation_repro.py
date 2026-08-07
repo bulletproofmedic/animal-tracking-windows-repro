@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 
@@ -53,25 +53,38 @@ def governed_repair(
             "Repair cannot change media_kind for an existing media asset."
         )
 
-    desired: dict[str, object] = {
-        "lifecycle_status": "MANAGED",
-        "missing_or_corrupt_detail": "",
-        "managed_storage_key": validated.managed_storage_key,
-        "detected_mime_type": validated.detected_mime_type,
-        "detected_format": validated.detected_format,
-        "byte_count": validated.byte_count,
-        "width_pixels": validated.width_pixels,
-        "height_pixels": validated.height_pixels,
+    repaired = AssetState(
+        media_kind=asset.media_kind,
+        lifecycle_status="MANAGED",
+        accepted_at=asset.accepted_at,
+        missing_or_corrupt_detail="",
+        managed_storage_key=validated.managed_storage_key,
+        detected_mime_type=validated.detected_mime_type,
+        detected_format=validated.detected_format,
+        byte_count=validated.byte_count,
+        width_pixels=validated.width_pixels,
+        height_pixels=validated.height_pixels,
+        original_filename=asset.original_filename,
+        source_system=asset.source_system,
+        source_file_created_at=asset.source_file_created_at,
+        source_file_modified_at=asset.source_file_modified_at,
+    )
+    governed_fields = (
+        "lifecycle_status",
+        "missing_or_corrupt_detail",
+        "managed_storage_key",
+        "detected_mime_type",
+        "detected_format",
+        "byte_count",
+        "width_pixels",
+        "height_pixels",
+    )
+    changes = {
+        field: (getattr(asset, field), getattr(repaired, field))
+        for field in governed_fields
+        if getattr(asset, field) != getattr(repaired, field)
     }
-    changes: dict[str, tuple[object, object]] = {}
-    updates: dict[str, object] = {}
-    for field, after in desired.items():
-        before = getattr(asset, field)
-        if before == after:
-            continue
-        changes[field] = (before, after)
-        updates[field] = after
-    return replace(asset, **updates), changes
+    return repaired, changes
 
 
 def expected_thumbnail_dims(
@@ -125,7 +138,9 @@ def thumbnail_is_valid(
             image.verify()
         with Image.open(thumbnail_path) as image:
             image.load()
-        expected = hashlib.sha256(render_thumbnail_bytes(managed_path, edge)).hexdigest()
+        expected = hashlib.sha256(
+            render_thumbnail_bytes(managed_path, edge)
+        ).hexdigest()
         actual = sha256_file(thumbnail_path)
         return hmac.compare_digest(actual, expected)
     except (UnidentifiedImageError, OSError):
