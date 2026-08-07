@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "record_type": "ANIMAL_TRACKING_PR35_BOUNDED_PUBLIC_REPRODUCER_BINDING",
+  "private_repository": "bulletproofmedic/animal-tracking",
+  "assignment_id": "AT-R1-PR35-AUDIT-FINDINGS-REMEDIATION-20260806-001",
+  "ownership_id": "AT-OWN-196",
+  "work_id": "AT-COMP-20260806-001",
+  "failed_candidate": {
+    "commit": "e54622200d2c9dda3769f16529bbe204afe7755d",
+    "tree": "ce482f2779aa774e278aef3bbbaaca91dfd4b242"
+  },
+  "successor": {
+    "branch": "candidate/r1-pr35-audit-findings-remediation-20260806-1",
+    "commit": "0f03c09c0044a5a0f2cc04d0b82caa65086d874f",
+    "tree": "1211dc48a9f25e17e1fcdbd85b4b31c222d80467",
+    "parent": "e54622200d2c9dda3769f16529bbe204afe7755d",
+    "blobs": {
+      ".github/workflows/pr35-remediation-validation.yml": "868c021e30baa8051abf8628eab9fbd94fec2435",
+      "scripts/validate_media_increment.py": "32af1062bcf5a1da6f633f7ef3a3bce512a5d6be",
+      "src/animal_tracking/media/ingestion.py": "c7bcb04cd172393cea2de4b65672426bc6002be9",
+      "tests/integration/test_media_ingestion_audit_remediation.py": "b9a0a6a1d0a93184156504b71706bc6d3bd16d8e"
+    }
+  },
+  "public_scope": [
+    "deterministic thumbnail-byte source binding",
+    "invalid and forged derivative rejection and regeneration",
+    "complete repair metadata change-set derivation",
+    "repair classification-change rejection",
+    "bounded recovery and crash-boundary state transitions",
+    "Windows 2025 and Python 3.13.14 startup",
+    "availability of the exact locked dependency versions"
+  ],
+  "excluded_private_scope": [
+    "private repository checkout",
+    "private full Django model and migration validation",
+    "private complete pytest suite",
+    "private complete repository validators",
+    "private secrets scan",
+    "implementation acceptance"
+  ],
+  "authority_effect": "PUBLIC_DIAGNOSTIC_ONLY_NO_PRIVATE_VALIDATION_SUBSTITUTION_NO_ACCEPTANCE_MERGE_OWNER_USE_READINESS_OR_RELEASE_AUTHORITY"
+}
